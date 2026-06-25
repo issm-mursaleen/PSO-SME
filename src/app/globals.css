@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+/* ──────────────────────────────────────────────────────────────
+ * ALARA OS — c360 design system (warm-neutral "operations terminal")
+ * Ported onto Tailwind v4. The original MD3 token NAMES are kept so
+ * existing pages keep working, but their VALUES now resolve to the
+ * c360 neutral palette. New c360 alias tokens (card/muted/border/…)
+ * are added for the shared ui/* primitives.
+ * ────────────────────────────────────────────────────────────── */
+
+@theme {
+  /* ── Surfaces ── */
+  --color-background: #f5f4f0;          /* warm off-white canvas */
+  --color-surface: #f5f4f0;
+  --color-surface-bright: #ffffff;      /* header / elevated bar */
+  --color-surface-dim: #ecebe6;
+  --color-surface-container-lowest: #ffffff;   /* cards */
+  --color-surface-container-low: #f0efeb;
+  --color-surface-container: #ededea;
+  --color-surface-container-high: #eae9e5;
+  --color-surface-container-highest: #e5e4e0;
+  --color-surface-variant: #ededea;
+  --color-inverse-surface: #1a1a18;
+  --color-inverse-on-surface: #f5f4f0;
+  --color-surface-tint: #787776;
+
+  /* ── Text / lines ── */
+  --color-on-background: #1a1a18;
+  --color-on-surface: #1a1a18;
+  --color-on-surface-variant: #787776;
+  --color-outline: #a8a7a4;
+  --color-outline-variant: #e5e4e0;     /* hairline borders */
+
+  /* ── Primary (now neutral near-black) ── */
+  --color-primary: #1a1a18;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #ededea;
+  --color-on-primary-container: #1a1a18;
+  --color-primary-fixed: #ededea;
+  --color-primary-fixed-dim: #e5e4e0;
+  --color-on-primary-fixed: #1a1a18;
+  --color-on-primary-fixed-variant: #44433f;
+  --color-inverse-primary: #d8d7d3;
+
+  /* ── Secondary → muted neutral / info-blue accent ── */
+  --color-secondary: #3b82f6;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #eff6ff;
+  --color-on-secondary-container: #1e40af;
+  --color-secondary-fixed: #eff6ff;
+  --color-secondary-fixed-dim: #bfdbfe;
+  --color-on-secondary-fixed: #1e3a8a;
+  --color-on-secondary-fixed-variant: #1d4ed8;
+
+  /* ── Tertiary → amber "credit / Udhar" warning ── */
+  --color-tertiary: #d97706;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #fef3c7;
+  --color-on-tertiary-container: #92400e;
+  --color-tertiary-fixed: #fef3c7;
+  --color-tertiary-fixed-dim: #fcd34d;
+  --color-on-tertiary-fixed: #78350f;
+  --color-on-tertiary-fixed-variant: #b45309;
+
+  /* ── Error / destructive ── */
+  --color-error: #ef4444;
+  --color-on-error: #ffffff;
+  --color-error-container: #fef2f2;
+  --color-on-error-container: #991b1b;
+
+  /* ── c360 alias tokens (for ui/* primitives) ── */
+  --color-foreground: #1a1a18;
+  --color-card: #ffffff;
+  --color-card-foreground: #1a1a18;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1a1a18;
+  --color-muted: #ededea;
+  --color-muted-foreground: #787776;
+  --color-accent: #ededea;
+  --color-accent-foreground: #1a1a18;
+  --color-border: #e5e4e0;
+  --color-input: #e5e4e0;
+  --color-ring: #1a1a18;
+  --color-primary-foreground: #ffffff;
+  --color-secondary-foreground: #1a1a18;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+
+  /* ── Semantic status colors (charts & badges) ── */
+  --color-success: #4caf79;
+  --color-success-light: #ecfdf3;
+  --color-success-text: #166534;
+  --color-warning: #f59e0b;
+  --color-warning-light: #fffbeb;
+  --color-warning-text: #92400e;
+  --color-danger: #ef4444;
+  --color-danger-light: #fef2f2;
+  --color-danger-text: #991b1b;
+  --color-info: #3b82f6;
+  --color-info-light: #eff6ff;
+  --color-info-text: #1e40af;
+
+  /* ── Spacing scale (kept — pages reference p-gutter / gap-md / space-y-lg …) ── */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-base: 4px;
+  --spacing-gutter: 16px;
+  --spacing-container-padding: 24px;
+
+  /* ── Radius ── */
+  --radius: 0.75rem;
+
+  /* ── Shadows (c360 soft card elevation) ── */
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.07);
+  --shadow-lg: 0 8px 24px rgb(0 0 0 / 0.09);
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 4px 14px rgb(0 0 0 / 0.08);
+
+  /* ── Typography (families now Geist; scale kept) ── */
+  --font-sans: var(--font-geist), "Inter", system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), "JetBrains Mono", monospace;
+
+  --font-headline-lg: var(--font-geist), sans-serif;
+  --font-headline-md: var(--font-geist), sans-serif;
+  --font-headline-sm: var(--font-geist), sans-serif;
+  --font-body-lg: var(--font-geist), sans-serif;
+  --font-body-md: var(--font-geist), sans-serif;
+  --font-body-sm: var(--font-geist), sans-serif;
+  --font-label-md: var(--font-geist), sans-serif;
+  --font-numeric-data: var(--font-geist-mono), monospace;
+
+  --font-size-headline-lg: 24px;
+  --font-size-headline-md: 20px;
+  --font-size-headline-sm: 16px;
+  --font-size-body-lg: 16px;
+  --font-size-body-md: 14px;
+  --font-size-body-sm: 13px;
+  --font-size-label-md: 12px;
+  --font-size-numeric-data: 14px;
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 1rem;
+
+  /* ── Animations (replaces tailwindcss-animate) ── */
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-slide-in-left: slide-in-left 0.2s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+body {
+  font-family: var(--font-geist), "Inter", system-ui, sans-serif;
+  background-color: #f5f4f0;
+  color: #1a1a18;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Default hairline border color (mirrors c360's `* { @apply border-border }`) */
+*,
+*::before,
+*::after {
+  border-color: var(--color-outline-variant);
+}
+
+.font-mono-numbers {
+  font-family: var(--font-geist-mono), monospace;
+}
+
+/* ── Scrollbars ── */
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #d8d7d3; border-radius: 10px; }
+
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+.scrollbar-hidden { scrollbar-width: none; -ms-overflow-style: none; }
+.scrollbar-hidden::-webkit-scrollbar { display: none; }
+
+.text-balance { text-wrap: balance; }
