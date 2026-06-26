@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'ALARA OS — Customer 360',
+  title: 'PSO SME — Customer 360',
   description: 'Customer 360 operations workspace — credit ledger, invoices, and portfolio intelligence.',
 };
 

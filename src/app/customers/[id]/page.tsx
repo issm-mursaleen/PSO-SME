@@ -1,10 +1,53 @@
 'use client';
 
-import React, { useState, use } from 'react';
+import React, { useEffect, useState, use } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useApp } from '@/context/AppContext';
+import { useApp, type Customer } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
+
+type RecoType = 'overdue' | 'inactive' | 'upsell';
+type TabKey = 'summary' | 'ledger' | 'communication' | 'recommendations';
+
+function getRecoType(c: Customer): RecoType {
+  if (c.balance > c.creditLimit * 0.8 || (c.balance > 0 && c.lastVisitDays > 10)) return 'overdue';
+  if (c.lastVisitDays > 7) return 'inactive';
+  return 'upsell';
+}
+
+const RECOMMENDATIONS: Record<RecoType, { title: string; detail: (c: Customer) => string }> = {
+  overdue: {
+    title: 'Recover Outstanding Udhar',
+    detail: (c) =>
+      `${c.name} owes PKR ${c.balance.toLocaleString()} and hasn't been seen in ${c.lastVisitDays} days. Send a polite payment reminder before extending more credit.`,
+  },
+  inactive: {
+    title: 'Re-engage Inactive Customer',
+    detail: (c) =>
+      `${c.name} hasn't purchased in ${c.lastVisitDays} days. Send a personalized offer on their preferred products to win them back.`,
+  },
+  upsell: {
+    title: 'Upsell Opportunity',
+    detail: (c) =>
+      `${c.name} is a healthy, reliable account. Recommend a premium bundle of ${c.preferredProducts?.[0]?.name ?? 'their regular items'}.`,
+  },
+};
+
+function generateDraft(type: RecoType, channel: 'WhatsApp' | 'SMS', c: Customer): string {
+  const top = c.preferredProducts?.[0]?.name ?? 'your regular items';
+  const sign = channel === 'SMS' ? '- ALARA SME' : 'Shukriya, ALARA SME 🙏';
+  if (type === 'overdue')
+    return `Salam ${c.name}, ye ALARA SME se reminder hai. Aap ka PKR ${c.balance.toLocaleString()} udhar baqi hai jo ${c.lastVisitDays} din se due hai. Baraye meherbani jald clear karein. ${sign}`;
+  if (type === 'inactive')
+    return `Salam ${c.name}, kaafi din se aap tashreef nahi laaye. Aaj ${top} par khaas discount offer hai — bataiye to delivery arrange kar dein. ${sign}`;
+  return `Salam ${c.name}, aap ke liye premium ${top} ka naya stock aaya hai special rate par. Order ke liye reply karein. ${sign}`;
+}
+
+function generateReply(type: RecoType): string {
+  if (type === 'overdue') return 'Walaikum salam. Ji theek hai, main 2 din mein aa kar payment clear kar deta hoon. Shukriya.';
+  if (type === 'inactive') return 'Salam! Ji bilkul, offer achi hai. Kal main dukan aata hoon, mere liye rakh lijiyega.';
+  return 'Walaikum salam. Theek hai, mujhe ek packet bhej dein. Rate confirm kar dein please.';
+}
 
 export default function CustomerDetail({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
@@ -15,13 +58,26 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
     transactions,
     commLogs,
     sendWhatsAppReminder,
+    recordCustomerReply,
     recordPayment,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'summary' | 'ledger' | 'communication'>('summary');
+  const [activeTab, setActiveTab] = useState<TabKey>('summary');
   const [messageText, setMessageText] = useState('');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [businessPeriod, setBusinessPeriod] = useState<'day' | 'week' | 'month'>('month');
+  const [draftChannel, setDraftChannel] = useState<'WhatsApp' | 'SMS'>('WhatsApp');
+  const [draftText, setDraftText] = useState<string | null>(null); // null → use generated default
+
+  // Open a specific tab when navigated with ?tab= (e.g. from an alert card).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'recommendations' || t === 'ledger' || t === 'communication' || t === 'summary') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setActiveTab(t);
+    }
+  }, []);
 
   // Find customer
   const customer = customers.find((c) => c.id === id);
@@ -58,6 +114,24 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
 
   const outstandingBalance = customer.balance;
 
+  // Business done with this customer (total volume), split across the selected
+  // period. Deterministic split so day/week/month always show a figure.
+  const totalVolume = totalBilled + totalPaid;
+  const periodFactor = { day: 0.12, week: 0.45, month: 1 } as const;
+  const businessAmount = Math.round(totalVolume * periodFactor[businessPeriod]);
+  const businessCount =
+    businessPeriod === 'day'
+      ? Math.max(1, Math.round(customerTransactions.length * 0.2))
+      : businessPeriod === 'week'
+        ? Math.max(1, Math.round(customerTransactions.length * 0.6))
+        : customerTransactions.length;
+
+  // Next-best-action recommendation + AI draft for this customer.
+  const recoType = getRecoType(customer);
+  const recommendation = RECOMMENDATIONS[recoType];
+  const defaultDraft = generateDraft(recoType, draftChannel, customer);
+  const draftValue = draftText ?? defaultDraft;
+
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageText.trim()) return;
@@ -71,6 +145,18 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
     recordPayment(customer.id, parseFloat(paymentAmount));
     setShowPaymentModal(false);
     setPaymentAmount('');
+  };
+
+  // Send the AI draft on the chosen channel, schedule a reply, then jump to the
+  // outreach console where the conversation (and the reply 5s later) appears.
+  const handleSendDraft = () => {
+    const text = draftValue.trim();
+    if (!text) return;
+    sendWhatsAppReminder(customer.id, text, draftChannel);
+    window.setTimeout(() => {
+      recordCustomerReply(customer.id, generateReply(recoType), draftChannel);
+    }, 5000);
+    router.push(`/connect?customer=${customer.id}&customerName=${encodeURIComponent(customer.name)}`);
   };
 
   return (
@@ -135,17 +221,22 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
 
             {/* Tabs Navigation */}
             <div className="flex border-b border-outline-variant mt-6">
-              {(['summary', 'ledger', 'communication'] as const).map((tab) => (
+              {([
+                ['summary', 'Summary'],
+                ['recommendations', 'AI Recommendations'],
+                ['ledger', 'Ledger'],
+                ['communication', 'Communication'],
+              ] as const).map(([tab, label]) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-4 py-2 text-xs font-bold border-b-2 capitalize transition-all ${
+                  className={`px-4 py-2 text-xs font-bold border-b-2 transition-all whitespace-nowrap ${
                     activeTab === tab
                       ? 'border-primary text-primary font-bold'
                       : 'border-transparent text-on-surface-variant hover:text-primary'
                   }`}
                 >
-                  {tab}
+                  {label}
                 </button>
               ))}
             </div>
@@ -154,7 +245,51 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
           {/* TAB 1: Summary Dashboard */}
           {activeTab === 'summary' && (
             <div className="space-y-6">
-              
+
+              {/* Business done with this customer */}
+              <div className="bg-surface-container-lowest p-5 border border-outline-variant rounded-xl shadow-sm">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h3 className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">
+                    Business Done with {customer.name.split(' ')[0]}
+                  </h3>
+                  <div className="flex p-0.5 rounded-lg bg-surface-container border border-outline-variant/40 text-[10px] font-bold">
+                    {(['day', 'week', 'month'] as const).map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => setBusinessPeriod(p)}
+                        className={`px-3 py-1 rounded-md capitalize transition-all ${
+                          businessPeriod === p
+                            ? 'bg-white text-primary shadow-sm'
+                            : 'text-on-surface-variant hover:text-primary'
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <p className="text-2xl font-bold text-foreground tracking-tight tabular-nums">
+                      PKR {businessAmount.toLocaleString()}
+                    </p>
+                    <p className="text-[11px] text-on-surface-variant mt-1">
+                      {businessCount} transaction{businessCount !== 1 ? 's' : ''} this {businessPeriod}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-right">
+                    <div>
+                      <p className="text-[9px] text-on-surface-variant font-bold uppercase tracking-wider">Total Sales</p>
+                      <p className="text-sm font-bold text-primary mt-0.5 tabular-nums">PKR {totalBilled.toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-on-surface-variant font-bold uppercase tracking-wider">Total Paid</p>
+                      <p className="text-sm font-bold text-secondary mt-0.5 tabular-nums">PKR {totalPaid.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* Revenue Trends and opportunities */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
@@ -264,6 +399,82 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
                 </div>
               </div>
 
+            </div>
+          )}
+
+          {/* TAB: AI Recommendations */}
+          {activeTab === 'recommendations' && (
+            <div className="space-y-6">
+              {/* Next best action */}
+              <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-7 h-7 rounded-md bg-foreground text-background flex items-center justify-center">
+                    <Icon name="smart_toy" size={16} />
+                  </span>
+                  <div>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-on-surface-variant">Next Best Action</p>
+                    <h3 className="text-sm font-bold text-foreground">{recommendation.title}</h3>
+                  </div>
+                  <span className={`ml-auto text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                    recoType === 'overdue' ? 'bg-error-container text-on-error-container'
+                      : recoType === 'inactive' ? 'bg-secondary-container text-on-secondary-container'
+                        : 'bg-primary-fixed text-on-primary-fixed-variant'
+                  }`}>
+                    {recoType === 'overdue' ? 'High Priority' : recoType === 'inactive' ? 'Medium' : 'Opportunity'}
+                  </span>
+                </div>
+                <p className="text-xs text-on-surface-variant leading-relaxed">{recommendation.detail(customer)}</p>
+              </div>
+
+              {/* AI-generated draft */}
+              <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-xs text-on-surface-variant font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <Icon name="lightbulb" size={15} className="text-primary" /> AI-Generated Draft
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    {/* Channel selector */}
+                    <div className="flex p-0.5 rounded-lg bg-surface-container border border-outline-variant/40 text-[10px] font-bold">
+                      {(['WhatsApp', 'SMS'] as const).map((ch) => (
+                        <button
+                          key={ch}
+                          onClick={() => { setDraftChannel(ch); setDraftText(null); }}
+                          className={`px-3 py-1 rounded-md transition-all ${
+                            draftChannel === ch ? 'bg-white text-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'
+                          }`}
+                        >
+                          {ch}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setDraftText(generateDraft(recoType, draftChannel, customer))}
+                      title="Regenerate draft"
+                      className="h-7 px-2.5 rounded-lg border border-outline-variant text-[10px] font-bold text-on-surface-variant hover:bg-surface-container transition-colors flex items-center gap-1"
+                    >
+                      <Icon name="history" size={13} /> Regenerate
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={draftValue}
+                  onChange={(e) => setDraftText(e.target.value)}
+                  rows={5}
+                  className="w-full bg-surface-container-low border border-outline-variant rounded-lg p-3 outline-none text-xs leading-relaxed resize-none focus:ring-1 focus:ring-primary focus:border-primary"
+                />
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <p className="text-[10px] text-on-surface-variant">
+                    Sends on <strong className="text-foreground">{draftChannel}</strong>, then opens the Outreach console.
+                  </p>
+                  <button
+                    onClick={handleSendDraft}
+                    className="h-9 px-4 rounded-lg bg-primary text-on-primary text-xs font-bold hover:opacity-90 active:scale-95 transition-all flex items-center gap-1.5"
+                  >
+                    <Icon name={draftChannel === 'SMS' ? 'sms' : 'send'} size={15} />
+                    Send via {draftChannel}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

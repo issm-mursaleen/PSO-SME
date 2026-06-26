@@ -284,24 +284,36 @@ function CustomersListContent() {
       <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5 shadow-sm space-y-4">
         <h4 className="font-headline-sm text-label-md text-primary uppercase tracking-wider font-bold text-xs">Ledger Insights &amp; Alerts</h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="flex gap-3 items-start p-3 bg-error-container/20 border border-error/20 rounded-lg">
+          <Link
+            href="/customers/cust-riaz?tab=recommendations"
+            className="group flex gap-3 items-start p-3 bg-error-container/20 border border-error/20 rounded-lg hover:bg-error-container/30 hover:border-error/40 transition-all"
+          >
             <Icon name="warning" className="text-error" size={18} />
-            <div>
-              <p className="text-xs font-bold text-on-error-container">Defaulter Risk Alert</p>
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-on-error-container flex items-center gap-1">
+                Defaulter Risk Alert
+                <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+              </p>
               <p className="text-xs text-on-surface-variant mt-0.5">
                 Clifton area outstanding balance has grown by 14% this week. Riaz Ahmed exceeds safe limit.
               </p>
             </div>
-          </div>
-          <div className="flex gap-3 items-start p-3 bg-primary-container/20 border border-primary/20 rounded-lg">
+          </Link>
+          <Link
+            href="/customers/cust-sana?tab=recommendations"
+            className="group flex gap-3 items-start p-3 bg-primary-container/20 border border-primary/20 rounded-lg hover:bg-primary-container/30 hover:border-primary/40 transition-all"
+          >
             <Icon name="lightbulb" className="text-primary" size={18} />
-            <div>
-              <p className="text-xs font-bold text-on-primary-container">Outreach Recommendation</p>
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-on-primary-container flex items-center gap-1">
+                Outreach Recommendation
+                <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+              </p>
               <p className="text-xs text-on-surface-variant mt-0.5">
                 Sana Bibi has not purchased in 9 days. Usually visits every 4 days. Send her an active WhatsApp offer.
               </p>
             </div>
-          </div>
+          </Link>
         </div>
       </section>
     </div>

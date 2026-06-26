@@ -1,4 +1,4 @@
-# ALARA SME — Backend (FastAPI)
+# PSO SME — Backend (FastAPI)
 
 A lean shared API for **Component 2 — Deterministic Workflows** and the
 OpenAI-powered chat. Inspired by the c360 chat idea, without the

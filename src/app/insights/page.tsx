@@ -209,7 +209,7 @@ export default function Insights() {
               <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
               <XAxis dataKey="label" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={(v) => `${v}k`} />
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`PKR ${v}k`, '']} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`PKR ${v}k`, '']} />
               <Legend wrapperStyle={{ fontSize: '10px' }} />
               <Line type="monotone" dataKey="sales" name="Sales" stroke="#1a1a18" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
               <Line type="monotone" dataKey="recovery" name="Recovery" stroke="#4caf79" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
@@ -233,7 +233,7 @@ export default function Insights() {
                   <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`PKR ${v.toLocaleString()}`, '']} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`PKR ${v.toLocaleString()}`, '']} />
               <Legend wrapperStyle={{ fontSize: '10px' }} />
             </PieChart>
           </ResponsiveContainer>
@@ -250,7 +250,7 @@ export default function Insights() {
               <CartesianGrid strokeDasharray="3 3" stroke={GRID} horizontal={false} />
               <XAxis type="number" {...AXIS} />
               <YAxis type="category" dataKey="name" {...AXIS} width={72} />
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`${v} units`, '']} cursor={{ fill: '#f0efeb' }} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`${v} units`, '']} cursor={{ fill: '#f0efeb' }} />
               <Bar dataKey="qty" radius={[0, 4, 4, 0]} fill="#1a1a18" />
             </BarChart>
           </ResponsiveContainer>
@@ -267,7 +267,7 @@ export default function Insights() {
               <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
               <XAxis dataKey="name" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`PKR ${v.toLocaleString()}`, '']} cursor={{ fill: '#f0efeb' }} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`PKR ${v.toLocaleString()}`, '']} cursor={{ fill: '#f0efeb' }} />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                 {agingData.map((d, i) => (
                   <Cell key={i} fill={d.fill} />
@@ -291,7 +291,7 @@ export default function Insights() {
               <PolarGrid stroke="#e5e4e0" />
               <PolarAngleAxis dataKey="dim" stroke="#787776" fontSize={9} />
               <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#cbcac6" fontSize={8} tickFormatter={(v) => `${v}`} />
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`${v}`, 'Score']} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`${v}`, 'Score']} />
               <Radar dataKey="score" stroke="#1a1a18" fill="#1a1a18" fillOpacity={0.18} />
             </RadarChart>
           </ResponsiveContainer>
@@ -308,7 +308,7 @@ export default function Insights() {
               <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
               <XAxis dataKey="label" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={(v) => `${v}k`} />
-              <Tooltip {...chartTooltip} formatter={(v: number) => [`PKR ${v}k`, '']} cursor={{ fill: '#f0efeb' }} />
+              <Tooltip {...chartTooltip} formatter={(v: any) => [`PKR ${v}k`, '']} cursor={{ fill: '#f0efeb' }} />
               <Legend wrapperStyle={{ fontSize: '10px' }} />
               <Bar dataKey="recovered" name="Recovered" radius={[4, 4, 0, 0]} fill="#4caf79" />
               <Line type="monotone" dataKey="target" name="Target" stroke="#1a1a18" strokeWidth={2} dot={{ r: 3 }} />

@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { useApp } from '@/context/AppContext';
+import { useApp, type ConnectQueueItem } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
 
 export default function CustomerConnect() {
@@ -11,12 +11,57 @@ export default function CustomerConnect() {
     connectQueue,
     commLogs,
     sendWhatsAppReminder,
+    recordCustomerReply,
     recordPayment,
   } = useApp();
 
+  // NOTE: URL params (?customer=&draft=) are read in an effect AFTER mount, not
+  // in these initializers. Reading window.location during render makes the first
+  // client render differ from the server render → hydration mismatch.
   const [selectedQueueId, setSelectedQueueId] = useState('q-1');
-  const [activeFilter, setActiveFilter] = useState<'All' | 'Overdue' | 'Inactive'>('All');
+  const [queueTab, setQueueTab] = useState<'drafts' | 'sent'>('drafts');
+  const [queueSearch, setQueueSearch] = useState('');
   const [messageContent, setMessageContent] = useState('');
+  const [dashboardDraft, setDashboardDraft] = useState('');
+  const [draftChannel, setDraftChannel] = useState<'WhatsApp' | 'SMS'>('WhatsApp');
+  const [alertQueueItem, setAlertQueueItem] = useState<ConnectQueueItem | null>(null);
+  const [typingCustomerIds, setTypingCustomerIds] = useState<Record<string, boolean>>({});
+
+  // Hydrate from the URL once on the client (post-hydration, so SSR markup matches).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const cid = params.get('customer');
+    const customerName = params.get('customerName');
+    const draft = params.get('draft');
+    /* eslint-disable react-hooks/set-state-in-effect -- intentional one-time sync of client-only URL params post-hydration */
+    if (cid) {
+      const queued = connectQueue.find((q) => q.customerId === cid);
+      if (queued) {
+        setSelectedQueueId(queued.id);
+      } else if (customerName) {
+        const customer = customers.find((entry) => entry.id === cid || entry.name === customerName);
+        const alertItem: ConnectQueueItem = {
+          id: `alert-${cid}`,
+          customerId: cid,
+          customerName,
+          phone: customer?.phone || 'No phone saved',
+          reason: 'Dashboard alert follow-up',
+          dueDays: 0,
+          lastAction: 'Opened from dashboard alert',
+          health: 'warning',
+          channel: customer?.channel || 'WhatsApp',
+        };
+
+        setAlertQueueItem(alertItem);
+        setSelectedQueueId(alertItem.id);
+      }
+    }
+    if (draft) {
+      setDashboardDraft(draft);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Communication mode selection: WhatsApp, SMS, or Call
   const [commMode, setCommMode] = useState<'WhatsApp' | 'SMS' | 'Call'>('WhatsApp');
@@ -36,7 +81,7 @@ export default function CustomerConnect() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
   // Find active queue item
-  const activeQueueItem = connectQueue.find((q) => q.id === selectedQueueId) || connectQueue[0] || null;
+  const activeQueueItem = connectQueue.find((q) => q.id === selectedQueueId) || (alertQueueItem?.id === selectedQueueId ? alertQueueItem : null) || connectQueue[0] || null;
 
   // Find active customer info
   const activeCustomer = useMemo(() => {
@@ -44,19 +89,8 @@ export default function CustomerConnect() {
     return customers.find((c) => c.id === activeQueueItem.customerId) || null;
   }, [customers, activeQueueItem]);
 
-  // Pre-select a customer's outreach task when arriving via ?customer=<id>
-  // (e.g. "Share WhatsApp" from a recorded sale opens their timeline).
-  useEffect(() => {
-    const cid = new URLSearchParams(window.location.search).get('customer');
-    if (cid) {
-      const queued = connectQueue.find((q) => q.customerId === cid);
-      if (queued) setSelectedQueueId(queued.id);
-    }
-    // Read once on mount only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Sync communication mode with customer's default channel
+  /* eslint-disable react-hooks/set-state-in-effect -- Channel follows the selected customer's saved outreach preference. */
   useEffect(() => {
     if (activeCustomer) {
       if (activeCustomer.channel === 'Call') {
@@ -68,41 +102,37 @@ export default function CustomerConnect() {
       }
     }
   }, [activeCustomer]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Find communication logs
   const activeLogs = useMemo(() => {
     if (!activeQueueItem) return [];
     return commLogs.filter((log) => log.customerId === activeQueueItem.customerId);
   }, [commLogs, activeQueueItem]);
+  const isCustomerTyping = activeQueueItem ? Boolean(typingCustomerIds[activeQueueItem.customerId]) : false;
 
-  // Filter queue list
-  const filteredQueue = useMemo(() => {
-    return connectQueue.filter((item) => {
-      if (activeFilter === 'All') return true;
-      if (activeFilter === 'Overdue') {
-        return item.reason.toLowerCase().includes('overdue') || item.reason.toLowerCase().includes('failed') || item.reason.toLowerCase().includes('credit');
-      }
-      if (activeFilter === 'Inactive') {
-        return item.reason.toLowerCase().includes('inactivity') || item.reason.toLowerCase().includes('invoiced') || item.reason.toLowerCase().includes('visit');
-      }
-      return true;
-    });
-  }, [connectQueue, activeFilter]);
+  // Drafts queue — pending outreach items, filtered by the search box.
+  const searchedDrafts = useMemo(() => {
+    const q = queueSearch.trim().toLowerCase();
+    return connectQueue.filter(
+      (item) => !q || item.customerName.toLowerCase().includes(q) || item.reason.toLowerCase().includes(q),
+    );
+  }, [connectQueue, queueSearch]);
 
-  // Get status count for quick badges
-  const queueCounts = useMemo(() => {
-    const counts = { All: connectQueue.length, Overdue: 0, Inactive: 0 };
-    connectQueue.forEach((item) => {
-      const lowerReason = item.reason.toLowerCase();
-      if (lowerReason.includes('overdue') || lowerReason.includes('failed') || lowerReason.includes('credit')) {
-        counts.Overdue += 1;
-      }
-      if (lowerReason.includes('inactivity') || lowerReason.includes('invoiced') || lowerReason.includes('visit')) {
-        counts.Inactive += 1;
-      }
-    });
-    return counts;
-  }, [connectQueue]);
+  // Sent log — outreach the store has already dispatched (newest first).
+  const sentLog = useMemo(() => {
+    const q = queueSearch.trim().toLowerCase();
+    return commLogs
+      .filter((log) => log.sender === 'Store')
+      .filter(
+        (log) =>
+          !q ||
+          log.content.toLowerCase().includes(q) ||
+          (customers.find((c) => c.id === log.customerId)?.name.toLowerCase().includes(q) ?? false),
+      )
+      .slice()
+      .reverse();
+  }, [commLogs, customers, queueSearch]);
 
   // Toast trigger helper
   const triggerToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
@@ -112,14 +142,53 @@ export default function CustomerConnect() {
     }, 3500);
   };
 
+  const scheduleCustomerReply = (
+    customerId: string,
+    channel: 'WhatsApp' | 'SMS' | 'Call',
+    sentText: string
+  ) => {
+    const lowerText = sentText.toLowerCase();
+    let reply = 'Ji, message received. I will confirm shortly.';
+
+    if (lowerText.includes('payment') || lowerText.includes('pending') || lowerText.includes('balance') || lowerText.includes('clear')) {
+      reply = 'Ji, I saw this. I will arrange the payment and update you soon.';
+    } else if (lowerText.includes('delivery') || lowerText.includes('items')) {
+      reply = 'Ji, please keep the items ready. I will confirm delivery timing.';
+    } else if (lowerText.includes('call') || lowerText.includes('visit')) {
+      reply = 'Ji, you can call me in a while. I am available today.';
+    } else if (lowerText.includes('confirmation') || lowerText.includes('status')) {
+      reply = 'I will check and send confirmation shortly.';
+    }
+
+    window.setTimeout(() => {
+      setTypingCustomerIds((prev) => ({ ...prev, [customerId]: true }));
+
+      window.setTimeout(() => {
+        setTypingCustomerIds((prev) => ({ ...prev, [customerId]: false }));
+        recordCustomerReply(customerId, reply, channel);
+      }, 3000);
+    }, 5000);
+  };
+
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageContent.trim() || !activeQueueItem) return;
 
+    const sentText = messageContent.trim();
     // Use selected commMode parameter to log channel type (WhatsApp, SMS, Call)
-    sendWhatsAppReminder(activeQueueItem.customerId, messageContent, commMode);
+    sendWhatsAppReminder(activeQueueItem.customerId, sentText, commMode);
+    scheduleCustomerReply(activeQueueItem.customerId, commMode, sentText);
     setMessageContent('');
     triggerToast(`${commMode} communication dispatch logged in timeline feed.`, 'success');
+  };
+
+  const handleSendDashboardDraft = () => {
+    if (!dashboardDraft.trim() || !activeQueueItem) return;
+    const sentText = dashboardDraft.trim();
+    sendWhatsAppReminder(activeQueueItem.customerId, sentText, draftChannel);
+    scheduleCustomerReply(activeQueueItem.customerId, draftChannel, sentText);
+    setDashboardDraft('');
+    triggerToast(`${draftChannel} draft dispatched from outreach chat.`, 'success');
   };
 
   const handleQuickTemplate = (text: string) => {
@@ -263,96 +332,130 @@ export default function CustomerConnect() {
         darkConsoleMode ? 'border-[#292524] bg-[#1c1917]' : 'border-outline-variant/60 bg-surface-container-lowest'
       }`}>
         
-        {/* Queue Header & Filters */}
-        <div className={`p-4 border-b space-y-3 shrink-0 ${darkConsoleMode ? 'border-[#292524]' : 'border-outline-variant/60'}`}>
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-sm flex items-center gap-2">
-              <Icon name="hub" className="text-primary" size={20} />
-              Outreach Suite
-            </h3>
-            <span className="text-[9px] bg-primary/10 text-primary font-bold px-2 py-0.5 rounded-full">
-              {queueCounts.All} tasks
+        {/* Workspace header + tabs */}
+        <div className={`px-4 pt-4 shrink-0 ${darkConsoleMode ? 'border-[#292524]' : 'border-outline-variant/60'}`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-mono text-sm font-bold uppercase tracking-widest">Outreach Workspace</h3>
+            <span className="font-mono text-[8px] font-bold px-2 py-0.5 rounded border border-outline-variant text-muted-foreground uppercase tracking-widest">
+              Alara Intel
             </span>
           </div>
-          
-          {/* Quick Filters */}
-          <div className={`flex p-0.5 rounded-lg text-[10px] border ${
-            darkConsoleMode ? 'bg-[#1c1917] border-stone-700' : 'bg-surface-container border-outline-variant/30'
-          }`}>
-            {(['All', 'Overdue', 'Inactive'] as const).map((filter) => {
-              const isActive = activeFilter === filter;
-              const count = filter === 'All' ? queueCounts.All : filter === 'Overdue' ? queueCounts.Overdue : queueCounts.Inactive;
+          <div className={`flex gap-5 border-b ${darkConsoleMode ? 'border-[#292524]' : 'border-outline-variant/60'}`}>
+            {([
+              ['drafts', 'Drafts Queue', searchedDrafts.length],
+              ['sent', 'Sent Log', sentLog.length],
+            ] as const).map(([key, label, count]) => {
+              const active = queueTab === key;
               return (
                 <button
-                  key={filter}
-                  onClick={() => setActiveFilter(filter)}
-                  className={`flex-1 py-1 rounded-md font-bold transition-all flex items-center justify-center gap-1 ${
-                    isActive
-                      ? darkConsoleMode
-                        ? 'bg-stone-800 text-white shadow-sm'
-                        : 'bg-white shadow-sm text-primary'
-                      : 'text-on-surface-variant hover:opacity-85'
+                  key={key}
+                  onClick={() => setQueueTab(key)}
+                  className={`-mb-px border-b-2 pb-2.5 text-[11px] font-bold uppercase tracking-wider transition-colors ${
+                    active
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
                   }`}
                 >
-                  {filter}
-                  <span className={`px-1 rounded-full text-[8px] ${
-                    isActive ? 'bg-primary-fixed text-primary' : 'bg-stone-200/50 text-stone-600'
-                  }`}>{count}</span>
+                  {label} ({count})
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Queue Scroll List */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-stone-100/10">
-          {filteredQueue.length === 0 ? (
-            <p className="text-xs opacity-60 italic p-6 text-center">No connect tasks pending in this group.</p>
+        {/* Search */}
+        <div className={`p-3 border-b shrink-0 ${darkConsoleMode ? 'border-[#292524]' : 'border-outline-variant/60'}`}>
+          <div className="relative">
+            <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+            <input
+              value={queueSearch}
+              onChange={(e) => setQueueSearch(e.target.value)}
+              placeholder="Search queue..."
+              className={`w-full h-9 pl-9 pr-3 rounded-lg border text-xs outline-none transition-all focus:ring-1 focus:ring-ring/40 ${
+                darkConsoleMode
+                  ? 'bg-[#1c1917] border-stone-700 text-stone-200 placeholder:text-stone-500'
+                  : 'bg-surface-container-low border-outline-variant text-foreground placeholder:text-muted-foreground focus:bg-card'
+              }`}
+            />
+          </div>
+        </div>
+
+        {/* List */}
+        <div className={`flex-1 overflow-y-auto custom-scrollbar divide-y ${darkConsoleMode ? 'divide-[#292524]' : 'divide-outline-variant/60'}`}>
+          {queueTab === 'drafts' ? (
+            searchedDrafts.length === 0 ? (
+              <p className="text-xs opacity-60 italic p-6 text-center">No drafts match your search.</p>
+            ) : (
+              searchedDrafts.map((item) => {
+                const isActive = item.id === selectedQueueId;
+                const initials = item.customerName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+                const urgency =
+                  item.health === 'critical'
+                    ? { label: 'HIGH', cls: 'bg-danger-light text-danger-text' }
+                    : item.health === 'warning'
+                    ? { label: 'MEDIUM', cls: 'bg-warning-light text-warning-text' }
+                    : { label: 'LOW', cls: 'bg-muted text-muted-foreground' };
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setSelectedQueueId(item.id)}
+                    className={`w-full text-left p-4 flex items-start gap-3 transition-colors ${
+                      isActive
+                        ? darkConsoleMode ? 'bg-stone-800/60' : 'bg-muted/60'
+                        : darkConsoleMode ? 'hover:bg-[#292524]' : 'hover:bg-muted/40'
+                    }`}
+                  >
+                    <span className="size-9 rounded-full bg-foreground text-background flex items-center justify-center text-[11px] font-bold shrink-0">
+                      {initials}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-bold text-foreground truncate">{item.customerName}</p>
+                        <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${urgency.cls}`}>
+                          {urgency.label}
+                        </span>
+                      </div>
+                      <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground mt-0.5">
+                        {item.channel} First
+                      </p>
+                      <p className="text-xs italic text-muted-foreground mt-1.5 truncate">{item.reason}</p>
+                    </div>
+                  </button>
+                );
+              })
+            )
+          ) : sentLog.length === 0 ? (
+            <p className="text-xs opacity-60 italic p-6 text-center">No outreach has been sent yet.</p>
           ) : (
-            filteredQueue.map((item) => {
-              const isActive = item.id === selectedQueueId;
-              const customerObj = customers.find((c) => c.id === item.customerId);
-              const balanceStr = customerObj ? `PKR ${customerObj.balance.toLocaleString()}` : '';
-              
+            sentLog.map((log) => {
+              const cust = customers.find((c) => c.id === log.customerId);
+              const name = cust?.name ?? 'Customer';
+              const initials = name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+              const queued = connectQueue.find((q) => q.customerId === log.customerId);
               return (
-                <div
-                  key={item.id}
-                  onClick={() => setSelectedQueueId(item.id)}
-                  className={`p-4 cursor-pointer transition-all border-l-4 select-none relative group ${
-                    isActive
-                      ? darkConsoleMode
-                        ? 'bg-stone-800/60 border-stone-500 shadow-sm text-white'
-                        : 'bg-primary-fixed/20 border-primary text-primary font-bold shadow-sm'
-                      : darkConsoleMode
-                      ? 'border-transparent text-stone-400 hover:bg-[#292524] hover:text-stone-200'
-                      : 'border-transparent text-on-surface-variant hover:bg-surface-container-high'
+                <button
+                  key={log.id}
+                  onClick={() => queued && setSelectedQueueId(queued.id)}
+                  className={`w-full text-left p-4 flex items-start gap-3 transition-colors ${
+                    darkConsoleMode ? 'hover:bg-[#292524]' : 'hover:bg-muted/40'
                   }`}
                 >
-                  {/* Status Indicator circle */}
-                  <div className="flex justify-between items-start gap-1">
-                    <div>
-                      <h4 className="font-extrabold text-[12px] truncate max-w-[170px]">{item.customerName}</h4>
-                      <p className="text-[10px] text-tertiary font-bold mt-0.5">{item.reason}</p>
+                  <span className="size-9 rounded-full bg-foreground text-background flex items-center justify-center text-[11px] font-bold shrink-0">
+                    {initials}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-bold text-foreground truncate">{name}</p>
+                      <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success-light text-success-text">
+                        Sent
+                      </span>
                     </div>
-                    
-                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                      item.health === 'critical' 
-                        ? 'bg-red-500/15 text-red-500 border border-red-500/20' 
-                        : 'bg-amber-500/15 text-amber-500 border border-amber-500/20'
-                    }`}>
-                      {item.health === 'critical' ? 'Urgent' : 'Alert'}
-                    </span>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground mt-0.5">
+                      {log.type} · {log.timestamp}
+                    </p>
+                    <p className="text-xs italic text-muted-foreground mt-1.5 truncate">{log.content}</p>
                   </div>
-
-                  {/* Financial snapshot inside card */}
-                  <div className="flex items-center justify-between mt-3 text-[9px] opacity-75 font-semibold">
-                    <span className="flex items-center gap-1">
-                      <Icon name={item.channel === 'WhatsApp' ? 'chat' : item.channel === 'SMS' ? 'sms' : 'phone_iphone'} size={12} />
-                      {item.lastAction}
-                    </span>
-                    <span className="font-mono font-bold text-stone-800 dark:text-stone-300">{balanceStr}</span>
-                  </div>
-                </div>
+                </button>
               );
             })
           )}
@@ -476,54 +579,165 @@ export default function CustomerConnect() {
                 );
               })
             )}
+            {isCustomerTyping && (
+              <div className="flex justify-start anim-subtle-fade" aria-live="polite" aria-label={`${activeQueueItem.customerName} is typing`}>
+                <div className="space-y-1 max-w-[75%] sm:max-w-[65%]">
+                  <div
+                    className={`p-3.5 rounded-2xl rounded-tl-none shadow-sm border text-[12px] leading-relaxed relative ${
+                      darkConsoleMode
+                        ? 'bg-[#292524] border-stone-800 text-stone-100'
+                        : 'bg-white border-outline-variant/50 text-on-surface'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-1.5 opacity-60 text-[8px] font-bold uppercase tracking-wider">
+                      <Icon name="chat" size={10} />
+                      Customer typing
+                    </div>
+                    <div className="flex items-center gap-1.5 h-4">
+                      {[0, 1, 2].map((dot) => (
+                        <span
+                          key={dot}
+                          className={`size-1.5 rounded-full animate-bounce ${
+                            darkConsoleMode ? 'bg-stone-300' : 'bg-stone-500'
+                          }`}
+                          style={{ animationDelay: `${dot * 120}ms` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-
-          {/* Suggested Quick Outreach Action Templates (text templates are
-              irrelevant for voice Calls, so hide them in Call mode) */}
-          {commMode !== 'Call' && (
-          <div className={`p-4 border-t shrink-0 space-y-3 transition-colors duration-300 ${
-            darkConsoleMode ? 'border-[#292524] bg-[#1c1917]' : 'border-outline-variant/60 bg-surface-container-lowest'
-          }`}>
-            <p className="text-[9px] font-extrabold opacity-60 uppercase tracking-widest">Suggested Outreach Templates</p>
-            <div className="flex flex-wrap gap-2 text-[10px]">
-              <button
-                onClick={() =>
-                  handleQuickTemplate(
-                    `Salam ${activeCustomer.name} sahib, this is a reminder from ALARA SME. Your pending credit balance is PKR ${activeCustomer.balance.toLocaleString()}. Kindly clear this balance today. Shukriya.`
-                  )
-                }
-                className={`border rounded px-3 py-1.5 font-bold transition-all active:scale-95 flex items-center gap-1 ${
-                  darkConsoleMode 
-                    ? 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700' 
-                    : 'bg-surface-container hover:bg-surface-container-high border-outline-variant text-primary'
-                }`}
-              >
-                <Icon name="payments" size={12} />
-                Send Balance Due Reminder
-              </button>
-              <button
-                onClick={() =>
-                  handleQuickTemplate(
-                    `Salam ${activeCustomer.name} sahib, we have received fresh premium stock of your preferred grocery lines at a discount today! Let us know if you want delivery. Shukriya.`
-                  )
-                }
-                className={`border rounded px-3 py-1.5 font-bold transition-all active:scale-95 flex items-center gap-1 ${
-                  darkConsoleMode 
-                    ? 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700' 
-                    : 'bg-surface-container hover:bg-surface-container-high border-outline-variant text-primary'
-                }`}
-              >
-                <Icon name="inventory_2" size={12} />
-                Stock / Promotional Offer
-              </button>
-            </div>
-          </div>
-          )}
 
           {/* Composer & Channel Control Area */}
           <div className={`p-4 border-t shrink-0 space-y-3 transition-colors duration-300 ${
             darkConsoleMode ? 'border-[#292524] bg-[#1c1917]' : 'border-outline-variant/60 bg-surface-container-low'
           }`}>
+            {dashboardDraft.trim() && (
+              <div
+                className={`rounded-xl border p-3 space-y-3 ${
+                  draftChannel === 'WhatsApp'
+                    ? darkConsoleMode
+                      ? 'border-emerald-700 bg-emerald-950/30'
+                      : 'border-emerald-200 bg-emerald-50'
+                    : darkConsoleMode
+                    ? 'border-sky-700 bg-sky-950/30'
+                    : 'border-sky-200 bg-sky-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p
+                      className={`text-[10px] font-extrabold uppercase tracking-widest ${
+                        draftChannel === 'WhatsApp' ? 'text-emerald-700' : 'text-sky-700'
+                      }`}
+                    >
+                      Dashboard Alert Draft
+                    </p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      Edit this draft here, then send it from the outreach chat.
+                    </p>
+                  </div>
+                  <div className="flex rounded-lg bg-white/70 border border-white/70 p-0.5 text-[10px] font-bold">
+                    {(['WhatsApp', 'SMS'] as const).map((channel) => (
+                      <button
+                        key={channel}
+                        type="button"
+                        onClick={() => setDraftChannel(channel)}
+                        className={`px-3 py-1.5 rounded-md transition-all ${
+                          draftChannel === channel
+                            ? channel === 'WhatsApp'
+                              ? 'bg-emerald-600 text-white shadow-sm'
+                              : 'bg-sky-500 text-white shadow-sm'
+                            : channel === 'WhatsApp'
+                            ? 'text-emerald-700 hover:bg-emerald-100'
+                            : 'text-sky-700 hover:bg-sky-100'
+                        }`}
+                      >
+                        {channel}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <textarea
+                  rows={3}
+                  value={dashboardDraft}
+                  onChange={(event) => setDashboardDraft(event.target.value)}
+                  className={`w-full resize-none rounded-lg border px-3 py-2 text-xs leading-relaxed outline-none ${
+                    draftChannel === 'WhatsApp'
+                      ? 'border-emerald-200 bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200'
+                      : 'border-sky-200 bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-200'
+                  }`}
+                />
+
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDashboardDraft('')}
+                    className="h-8 px-3 rounded-lg border border-outline-variant bg-white/70 text-[10px] font-bold text-muted-foreground hover:bg-white hover:text-foreground transition-colors"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSendDashboardDraft}
+                    className={`h-8 px-4 rounded-lg text-[10px] font-bold text-white transition-all active:scale-95 ${
+                      draftChannel === 'WhatsApp'
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-sky-500 hover:bg-sky-600'
+                    }`}
+                  >
+                    Send {draftChannel} Draft
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Suggested Quick Outreach Action Templates (text templates are
+                irrelevant for voice Calls, so hide them in Call mode) */}
+            {commMode !== 'Call' && (
+              <div className={`rounded-xl border p-3 space-y-3 transition-colors duration-300 ${
+                darkConsoleMode ? 'border-stone-800 bg-stone-900/40' : 'border-outline-variant/60 bg-surface-container-lowest'
+              }`}>
+                <p className="text-[9px] font-extrabold opacity-60 uppercase tracking-widest">Suggested Outreach Templates</p>
+                <div className="flex flex-wrap gap-2 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleQuickTemplate(
+                        `Salam ${activeCustomer.name} sahib, this is a reminder from PSO SME. Your pending credit balance is PKR ${activeCustomer.balance.toLocaleString()}. Kindly clear this balance today. Shukriya.`
+                      )
+                    }
+                    className={`border rounded px-3 py-1.5 font-bold transition-all active:scale-95 flex items-center gap-1 ${
+                      darkConsoleMode
+                        ? 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700'
+                        : 'bg-surface-container hover:bg-surface-container-high border-outline-variant text-primary'
+                    }`}
+                  >
+                    <Icon name="payments" size={12} />
+                    Send Balance Due Reminder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleQuickTemplate(
+                        `Salam ${activeCustomer.name} sahib, we have received fresh premium stock of your preferred grocery lines at a discount today! Let us know if you want delivery. Shukriya.`
+                      )
+                    }
+                    className={`border rounded px-3 py-1.5 font-bold transition-all active:scale-95 flex items-center gap-1 ${
+                      darkConsoleMode
+                        ? 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700'
+                        : 'bg-surface-container hover:bg-surface-container-high border-outline-variant text-primary'
+                    }`}
+                  >
+                    <Icon name="inventory_2" size={12} />
+                    Stock / Promotional Offer
+                  </button>
+                </div>
+              </div>
+            )}
             
             {/* Communication Channel Mode Selector */}
             <div className="flex gap-2 text-[10px] font-bold">

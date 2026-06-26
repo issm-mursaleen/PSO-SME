@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useApp, InvoiceItem } from '@/context/AppContext';
+import Link from 'next/link';
+import { useApp, Invoice, InvoiceItem } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
 
 interface InvoiceRow {
@@ -31,8 +31,114 @@ const PRODUCT_CATALOG = [
   { name: 'Cadbury Dairy Milk', price: 180, unit: 'pcs' },
 ];
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const formatMoney = (value: number) => `PKR ${value.toLocaleString()}`;
+
+const buildInvoiceHtml = (invoice: Invoice) => {
+  const subtotal = invoice.items.reduce((sum, item) => sum + item.total, 0);
+  const itemRows = invoice.items
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(item.name)}</td>
+          <td class="center">${item.quantity} ${escapeHtml(item.unit)}</td>
+          <td class="right">${formatMoney(item.price)}</td>
+          <td class="right strong">${formatMoney(item.total)}</td>
+        </tr>`,
+    )
+    .join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(invoice.id)} Invoice</title>
+  <style>
+    body { margin: 0; background: #f5f4f0; color: #1a1a18; font-family: Arial, sans-serif; }
+    .page { width: 760px; margin: 32px auto; background: #fff; border: 1px solid #e5e4e0; padding: 32px; }
+    .top { display: flex; justify-content: space-between; gap: 24px; border-bottom: 1px solid #e5e4e0; padding-bottom: 18px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 20px; letter-spacing: 0.12em; }
+    h2 { font-size: 18px; text-align: right; }
+    .muted { color: #787776; font-size: 12px; line-height: 1.7; }
+    .bill { margin: 24px 0; font-size: 13px; line-height: 1.7; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { background: #ededea; color: #787776; text-align: left; padding: 10px; }
+    td { border-bottom: 1px solid #e5e4e0; padding: 10px; }
+    .center { text-align: center; }
+    .right { text-align: right; }
+    .strong { font-weight: 700; }
+    .totals { width: 320px; margin-left: auto; margin-top: 24px; font-size: 13px; }
+    .line { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #e5e4e0; }
+    .grand { font-size: 17px; font-weight: 800; }
+    .notes { margin-top: 24px; background: #f0efeb; padding: 14px; font-size: 12px; color: #44433f; line-height: 1.6; }
+    @media print { body { background: #fff; } .page { margin: 0; width: auto; border: 0; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="top">
+      <div>
+        <h1>PSO SME</h1>
+        <p class="muted">Retailer - Clifton, Karachi<br/>Phone: +92 300 0000000</p>
+      </div>
+      <div>
+        <h2>INVOICE</h2>
+        <p class="muted">#${escapeHtml(invoice.id)}<br/>Date: ${escapeHtml(invoice.date)}<br/>Due: ${escapeHtml(invoice.dueDate)}</p>
+      </div>
+    </section>
+    <section class="bill">
+      <p class="muted strong">BILL TO</p>
+      <p class="strong">${escapeHtml(invoice.customerName)}</p>
+      <p class="muted">Payment Type: ${escapeHtml(invoice.paymentType)} | Status: ${escapeHtml(invoice.status)}</p>
+    </section>
+    <table>
+      <thead>
+        <tr><th>Item</th><th class="center">Qty</th><th class="right">Price</th><th class="right">Total</th></tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+    <section class="totals">
+      <div class="line"><span>Subtotal</span><span>${formatMoney(subtotal)}</span></div>
+      <div class="line"><span>Discount</span><span>${formatMoney(invoice.discount)}</span></div>
+      <div class="line grand"><span>Grand Total</span><span>${formatMoney(invoice.amount)}</span></div>
+    </section>
+    <section class="notes"><strong>Notes:</strong><br/>${escapeHtml(invoice.notes)}</section>
+  </main>
+</body>
+</html>`;
+};
+
+const downloadInvoiceFile = (invoice: Invoice) => {
+  const blob = new Blob([buildInvoiceHtml(invoice)], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${invoice.id}-${invoice.customerName.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.html`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+const printInvoice = (invoice: Invoice) => {
+  const printWindow = window.open('', '_blank', 'width=900,height=1100');
+  if (!printWindow) return;
+  printWindow.document.open();
+  printWindow.document.write(buildInvoiceHtml(invoice));
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 250);
+};
+
 export default function NewInvoice() {
-  const router = useRouter();
   const { customers, recordSale, sendWhatsAppReminder } = useApp();
 
   const [selectedCustomerId, setSelectedCustomerId] = useState('walk-in');
@@ -50,13 +156,14 @@ export default function NewInvoice() {
   // today's date are generated after mount to avoid server/client hydration drift.
   const [draftId, setDraftId] = useState('INV-…');
   const [todayStr, setTodayStr] = useState('');
-  const [savedInvoiceId, setSavedInvoiceId] = useState('');
+  const [savedInvoice, setSavedInvoice] = useState<Invoice | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
   // Default due date = 7 days from now; also set draft id + today (client-only)
+  /* eslint-disable react-hooks/set-state-in-effect -- Client-only seeded invoice metadata avoids server/client date drift. */
   useEffect(() => {
     const d = new Date();
     setTodayStr(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }));
@@ -64,6 +171,7 @@ export default function NewInvoice() {
     d.setDate(d.getDate() + 7);
     setDueDate(d.toISOString().split('T')[0]);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const selectedCustomerInfo = customers.find((c) => c.id === selectedCustomerId) || {
     id: 'walk-in',
@@ -145,18 +253,22 @@ export default function NewInvoice() {
 
       // Record as Credit Sale (Udhar); use the REAL id returned for confirmation
       const saved = recordSale(selectedCustomerId, 'Udhar', invoiceItems, discountVal, notes, 0);
+      const previewInvoice: Invoice = {
+        ...saved,
+        dueDate,
+      };
 
-      setSavedInvoiceId(saved.id);
+      setSavedInvoice(previewInvoice);
       setIsSaving(false);
       setShowSuccess(true);
-
-      setTimeout(() => router.push('/invoices'), 1800);
+      downloadInvoiceFile(previewInvoice);
+      triggerToast(`Invoice ${previewInvoice.id} downloaded.`, 'success');
     }, 900);
   };
 
   const handleWhatsAppDraft = () => {
     if (!validate()) return;
-    const summary = `Salam ${selectedCustomerInfo.name}, here is your invoice draft from ALARA SME. Total: PKR ${grandTotal.toLocaleString()}, due ${dueDate}. Shukriya.`;
+    const summary = `Salam ${selectedCustomerInfo.name}, here is your invoice draft from PSO SME. Total: PKR ${grandTotal.toLocaleString()}, due ${dueDate}. Shukriya.`;
     if (selectedCustomerId !== 'walk-in') {
       sendWhatsAppReminder(selectedCustomerId, summary);
       triggerToast(`Draft sent to ${selectedCustomerInfo.name} on WhatsApp.`, 'success');
@@ -383,7 +495,7 @@ export default function NewInvoice() {
           <div className="bg-white border border-outline-variant rounded-xl shadow-md p-6 space-y-6 font-sans">
             <div className="flex justify-between items-start border-b border-outline-variant pb-4">
               <div>
-                <h3 className="font-mono font-bold text-primary text-base tracking-wider">ALARA SME</h3>
+                <h3 className="font-mono font-bold text-primary text-base tracking-wider">PSO SME</h3>
                 <p className="text-[10px] text-on-surface-variant">Retailer • Clifton, Karachi</p>
                 <p className="text-[9px] text-outline">Phone: +92 300 0000000</p>
               </div>
@@ -470,7 +582,7 @@ export default function NewInvoice() {
                 </>
               ) : (
                 <>
-                  <Icon name="save_alt" size={18} /> Save &amp; Dispatch Credit Invoice
+                  <Icon name="save_alt" size={18} /> Save, Preview &amp; Download Invoice
                 </>
               )}
             </button>
@@ -486,24 +598,131 @@ export default function NewInvoice() {
 
       </div>
 
-      {/* Success Modal */}
-      {showSuccess && (
+      {/* Saved Invoice Preview Modal */}
+      {showSuccess && savedInvoice && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-inverse-surface/60 backdrop-blur-sm px-4 inv-fade-in">
-          <div className="bg-white text-stone-900 rounded-2xl w-full max-w-112 overflow-hidden shadow-2xl border border-stone-200 inv-scale-up">
-            <div className="p-8 text-center">
-              <div className="w-16 h-16 bg-primary-fixed rounded-full flex items-center justify-center mx-auto mb-6">
-                <Icon name="verified" className="text-primary" size={32} />
+          <div className="bg-white text-stone-900 rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-2xl border border-stone-200 inv-scale-up flex flex-col">
+            <div className="px-5 py-4 border-b border-outline-variant flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-10 bg-primary-fixed rounded-full flex items-center justify-center shrink-0">
+                  <Icon name="verified" className="text-primary" size={22} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="font-bold text-base">Invoice Created</h2>
+                  <p className="text-xs text-stone-500 truncate">
+                    {savedInvoice.id} opened in preview and downloaded as an invoice file.
+                  </p>
+                </div>
               </div>
-              <h2 className="mb-2 font-bold text-xl">Credit Invoice Generated!</h2>
-              <p className="text-stone-500 text-xs">
-                Invoice <span className="font-mono font-bold text-primary">{savedInvoiceId}</span> for{' '}
-                <strong>PKR {grandTotal.toLocaleString()}</strong> was recorded in {selectedCustomerInfo.name}&apos;s ledger.
-              </p>
-              <p className="text-stone-400 text-[11px] mt-4">Redirecting to invoices…</p>
+              <button
+                type="button"
+                onClick={() => setShowSuccess(false)}
+                className="p-2 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                title="Close preview"
+              >
+                <Icon name="close" size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto custom-scrollbar bg-surface-container-low p-4">
+              <div className="bg-white border border-outline-variant rounded-xl shadow-md p-6 space-y-6 max-w-3xl mx-auto">
+                <div className="flex justify-between items-start border-b border-outline-variant pb-4">
+                  <div>
+                    <h3 className="font-mono font-bold text-primary text-base tracking-wider">PSO SME</h3>
+                    <p className="text-[10px] text-on-surface-variant">Retailer - Clifton, Karachi</p>
+                    <p className="text-[9px] text-outline">Phone: +92 300 0000000</p>
+                  </div>
+                  <div className="text-right">
+                    <h4 className="font-bold text-tertiary text-sm">INVOICE</h4>
+                    <p className="text-[10px] text-on-surface-variant font-mono-numbers font-bold">#{savedInvoice.id}</p>
+                    <p className="text-[9px] text-outline mt-1 font-mono-numbers">Date: {savedInvoice.date}</p>
+                    <p className="text-[9px] text-outline font-mono-numbers">Due Date: {savedInvoice.dueDate}</p>
+                  </div>
+                </div>
+
+                <div className="text-[11px]">
+                  <p className="font-bold text-on-surface-variant uppercase tracking-wider text-[9px] mb-1">Bill To:</p>
+                  <p className="font-bold text-on-surface text-xs">{savedInvoice.customerName}</p>
+                  <p className="text-on-surface-variant">Payment Type: {savedInvoice.paymentType}</p>
+                </div>
+
+                <div className="border border-outline-variant rounded-lg overflow-hidden">
+                  <table className="w-full text-[10px] text-left border-collapse">
+                    <thead className="bg-surface-container text-on-surface-variant font-bold border-b border-outline-variant">
+                      <tr>
+                        <th className="p-2">Item</th>
+                        <th className="p-2 text-center">Qty</th>
+                        <th className="p-2 text-right">Price</th>
+                        <th className="p-2 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-outline-variant">
+                      {savedInvoice.items.map((item) => (
+                        <tr key={`${savedInvoice.id}-${item.name}-${item.quantity}`}>
+                          <td className="p-2 font-bold">{item.name}</td>
+                          <td className="p-2 text-center font-mono-numbers">{item.quantity} {item.unit}</td>
+                          <td className="p-2 text-right font-mono-numbers">PKR {item.price.toLocaleString()}</td>
+                          <td className="p-2 text-right font-bold font-mono-numbers">PKR {item.total.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="space-y-1.5 text-xs font-mono-numbers border-t border-outline-variant pt-4">
+                  <div className="flex justify-between text-on-surface-variant">
+                    <span>Subtotal:</span>
+                    <span>PKR {savedInvoice.items.reduce((sum, item) => sum + item.total, 0).toLocaleString()}</span>
+                  </div>
+                  {savedInvoice.discount > 0 && (
+                    <div className="flex justify-between text-error">
+                      <span>Discount:</span>
+                      <span>(-) PKR {savedInvoice.discount.toLocaleString()}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant/50 pt-2 text-sm">
+                    <span>Grand Total:</span>
+                    <span className="text-primary font-bold">PKR {savedInvoice.amount.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="bg-surface-container-low p-3 rounded-lg text-[9px] text-on-surface-variant italic">
+                  <p className="font-bold font-sans not-italic uppercase tracking-wider text-[8px] mb-1">Invoice Notes:</p>
+                  {savedInvoice.notes}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-outline-variant flex flex-col sm:flex-row justify-between gap-3 bg-white">
+              <Link
+                href="/invoices"
+                className="inline-flex items-center justify-center h-10 px-4 rounded-lg border border-outline-variant text-xs font-bold text-on-surface-variant hover:bg-muted transition-colors"
+              >
+                View Invoices
+              </Link>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => downloadInvoiceFile(savedInvoice)}
+                  className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg border border-outline-variant text-xs font-bold text-foreground hover:bg-muted transition-colors"
+                >
+                  <Icon name="download" size={16} />
+                  Download Again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => printInvoice(savedInvoice)}
+                  className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/85 active:scale-[0.98] transition-all"
+                >
+                  <Icon name="print" size={16} />
+                  Print / Save PDF
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

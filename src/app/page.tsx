@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ShoppingCart, Banknote, UserPlus, Receipt, Megaphone, MessagesSquare,
   TrendingUp, AlertTriangle, CheckCircle2, History, MoreVertical, Lightbulb,
-  Plus, X, MessageSquare, Phone, BellRing,
+  Plus, BellRing,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, MetricCard, BarTrend, ProgressBar, Table, THead, Th, TBody, TRow, Td, Badge } from '@/components/ui';
@@ -14,15 +14,30 @@ import { Card, MetricCard, BarTrend, ProgressBar, Table, THead, Th, TBody, TRow,
 export default function Home() {
   const router = useRouter();
   const {
+    customers,
     notifications,
     invoices,
     transactions,
     connectQueue,
-    recordPayment,
   } = useApp();
 
-  const [activePaymentCustomer, setActivePaymentCustomer] = useState<{ id: string; name: string } | null>(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
+  // Resolve a customer id from an alert's name against the full roster.
+  const resolveCustomerId = (name: string): string | null => {
+    const exact = customers.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (exact) return exact.id;
+    const partial = customers.find(
+      (c) => c.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(c.name.toLowerCase()),
+    );
+    if (partial) return partial.id;
+    const token = name.toLowerCase().split(' ')[0];
+    return customers.find((c) => c.name.toLowerCase().startsWith(token))?.id ?? null;
+  };
+
+  // Click an alert → open that exact customer's card.
+  const openCustomerCard = (name: string) => {
+    const id = resolveCustomerId(name);
+    if (id) router.push(`/customers/${id}`);
+  };
 
   // Calculate dynamic stats based on new invoice/payment actions on top of mockup baselines
   const baseSales = 46850;
@@ -59,26 +74,6 @@ export default function Home() {
   const totalTxs = baseTxs + sessionTxsCount;
   const totalPendingFollowups = connectQueue.length;
 
-  const handleOpenPaymentModal = (customerName: string) => {
-    let customerId = '';
-    if (customerName.includes('Riaz')) customerId = 'cust-riaz';
-    else if (customerName.includes('Malik')) customerId = 'cust-malik';
-    else if (customerName.includes('Sana')) customerId = 'cust-sana';
-    else if (customerName.includes('Iqbal')) customerId = 'cust-iqbal';
-
-    if (customerId) {
-      setActivePaymentCustomer({ id: customerId, name: customerName });
-    }
-  };
-
-  const handleRecordPaymentSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (activePaymentCustomer && paymentAmount) {
-      recordPayment(activePaymentCustomer.id, parseFloat(paymentAmount));
-      setActivePaymentCustomer(null);
-      setPaymentAmount('');
-    }
-  };
 
   const cashPercentage = Math.round((totalCashSales / (totalSales || 1)) * 100);
   const udharPercentage = 100 - cashPercentage;
@@ -190,52 +185,33 @@ export default function Home() {
                     <Th>Urgency</Th>
                     <Th>Customer</Th>
                     <Th>Explanation</Th>
-                    <Th className="text-right">Actions</Th>
+                    <Th className="text-right">Next Step</Th>
                   </tr>
                 </THead>
                 <TBody>
                   {notifications.map((item) => (
-                    <TRow key={item.id} className="group">
+                    <TRow
+                      key={item.id}
+                      tabIndex={0}
+                      role="button"
+                      onClick={() => openCustomerCard(item.customerName)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openCustomerCard(item.customerName);
+                        }
+                      }}
+                      className="group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
                       <Td>
                         <Badge tone={item.urgency === 'HIGH' ? 'danger' : item.urgency === 'MEDIUM' ? 'info' : 'neutral'}>
                           {item.urgency}
                         </Badge>
                       </Td>
-                      <Td className="font-semibold whitespace-nowrap">{item.customerName}</Td>
+                      <Td className="font-semibold whitespace-nowrap group-hover:text-primary group-hover:underline">{item.customerName}</Td>
                       <Td className="text-muted-foreground">{item.description}</Td>
-                      <Td className="text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {item.actions.some((a) => a.actionType === 'chat') && (
-                            <Link href="/chat" className="p-1.5 rounded-lg border border-outline-variant text-muted-foreground hover:bg-muted hover:text-foreground transition-all" title="Message">
-                              <MessageSquare className="size-4" />
-                            </Link>
-                          )}
-                          {item.actions.some((a) => a.actionType === 'call') && (
-                            <Link href="/connect" className="p-1.5 rounded-lg border border-outline-variant text-muted-foreground hover:bg-muted hover:text-foreground transition-all" title="Call">
-                              <Phone className="size-4" />
-                            </Link>
-                          )}
-                          {item.actions.some((a) => a.actionType === 'promo') && (
-                            <Link href="/connect" className="px-3 py-1.5 rounded-lg border border-outline-variant text-foreground text-xs font-medium hover:bg-muted transition-all">
-                              Send Promo
-                            </Link>
-                          )}
-                          {item.actions.some((a) => a.actionType === 'remind') && (
-                            <button onClick={() => router.push(`/chat?query=Draft+reminder+for+${item.customerName}`)} className="px-3 py-1.5 rounded-lg border border-outline-variant text-muted-foreground text-xs font-medium hover:bg-muted transition-all">
-                              Remind
-                            </button>
-                          )}
-                          {item.actions.some((a) => a.actionType === 'payment') && (
-                            <button onClick={() => handleOpenPaymentModal(item.customerName)} className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/85 active:scale-[0.98] transition-all">
-                              Record Payment
-                            </button>
-                          )}
-                          {item.actions.some((a) => a.actionType === 'verify') && (
-                            <button onClick={() => handleOpenPaymentModal(item.customerName)} className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/85 transition-all">
-                              Re-Verify
-                            </button>
-                          )}
-                        </div>
+                      <Td className="text-right text-xs font-semibold text-muted-foreground group-hover:text-foreground whitespace-nowrap">
+                        View Card →
                       </Td>
                     </TRow>
                   ))}
@@ -301,54 +277,6 @@ export default function Home() {
         <Plus className="size-6 group-hover:rotate-90 transition-transform" />
       </Link>
 
-      {/* Quick Record Payment Modal */}
-      {activePaymentCustomer && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-inverse-surface/50 backdrop-blur-sm px-4">
-          <div className="bg-card rounded-2xl w-full max-w-md overflow-hidden shadow-lg border border-outline-variant animate-fade-in">
-            <form onSubmit={handleRecordPaymentSubmit} className="p-6 space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="text-base font-semibold text-foreground tracking-tight">Record Payment</h3>
-                <button
-                  type="button"
-                  onClick={() => setActivePaymentCustomer(null)}
-                  className="text-muted-foreground hover:bg-muted p-1 rounded-full transition-colors"
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                Recording payment received from <strong className="text-foreground">{activePaymentCustomer.name}</strong>.
-              </p>
-              <div className="space-y-1">
-                <label className="font-mono text-[10px] font-semibold text-muted-foreground uppercase tracking-widest block">Amount Received (PKR)</label>
-                <input
-                  type="number"
-                  required
-                  placeholder="e.g. 5000"
-                  className="w-full border border-outline-variant rounded-lg p-3 text-sm outline-none focus:ring-1 focus:ring-ring/40 focus:border-foreground transition-all"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                />
-              </div>
-              <div className="flex gap-2 justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => setActivePaymentCustomer(null)}
-                  className="px-4 py-2 rounded-lg border border-outline-variant text-muted-foreground text-sm hover:bg-muted transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/85 active:scale-[0.98] transition-all"
-                >
-                  Save Payment
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -33,8 +33,11 @@ SYSTEM_PROMPT = (
     "sales-and-credit (udhar) ledger. Decide if the user wants to record a sale, "
     "record a payment, add a customer, create an invoice, or query data, and call "
     "the matching tool with extracted parameters. Never do arithmetic yourself — "
-    "the tools compute everything. If the user is just chatting or the intent is "
-    "unclear, reply briefly in friendly Roman Urdu without calling a tool."
+    "the tools compute everything. Use the earlier conversation turns for context: "
+    "resolve pronouns and follow-ups (e.g. 'usko 500 aur de do', 'same customer', "
+    "'aur ek aur') against the customer/amounts mentioned earlier in the chat. "
+    "If the user is just chatting or the intent is unclear, reply briefly in "
+    "friendly Roman Urdu without calling a tool."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -94,12 +97,21 @@ def _handle_with_llm(payload: ChatIn) -> ChatOut:
     from openai import OpenAI
 
     client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+    system = SYSTEM_PROMPT
+    if payload.context and payload.context.active_customer_id:
+        system += f"\nThe user is currently viewing customer id '{payload.context.active_customer_id}'."
+
+    # Replay prior turns so the agent remembers earlier chats and resolves
+    # follow-up references (e.g. "usko 500 aur de do" → the last customer).
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    for turn in payload.history[-12:]:
+        messages.append({"role": turn.role, "content": turn.content})
+    messages.append({"role": "user", "content": payload.message})
+
     resp = client.chat.completions.create(
         model=config.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": payload.message},
-        ],
+        messages=messages,
         tools=TOOLS,
         tool_choice="auto",
         temperature=0,
@@ -115,17 +127,13 @@ def _handle_with_llm(payload: ChatIn) -> ChatOut:
 # ── Deterministic dispatch (shared by LLM + fallback) ───────────────────────
 def _run(name: str, args: dict[str, Any], source: str) -> ChatOut:
     if name == "record_sale":
-        res = workflows.record_sale(RecordSaleIn(**args))
-        return _to_chat(res, "confirmation", source,
-                        action={"customer": args.get("customer"), "amount": args.get("amount"),
-                                "payment_type": args.get("payment_type", "Cash")})
+        return _preview_record_sale(args, source)
     if name == "record_payment":
         res = workflows.record_payment(RecordPaymentIn(**args))
         return _to_chat(res, "confirmation", source,
                         action={"customer": args.get("customer"), "amount": args.get("amount")})
     if name == "add_customer":
-        res = workflows.add_customer(AddCustomerIn(**args))
-        return _to_chat(res, "confirmation", source, action=args)
+        return _preview_add_customer(args, source)
     if name == "create_invoice":
         items = [InvoiceItemIn(**it) for it in args.get("items", [])]
         res = workflows.create_invoice(CreateInvoiceIn(customer=args.get("customer", ""), items=items))
@@ -134,6 +142,81 @@ def _run(name: str, args: dict[str, Any], source: str) -> ChatOut:
         res = workflows.query_data(QueryIn(**args))
         return _to_chat(res, "metric", source)
     return ChatOut(text="Maaf kijiye, samajh nahi aaya.", source=source)
+
+
+def _preview_record_sale(args: dict[str, Any], source: str) -> ChatOut:
+    inp = RecordSaleIn(**args)
+    cust = workflows.store.find_customer(inp.customer)
+    if cust is None:
+        cands = workflows.store.find_customer_candidates(inp.customer)
+        if len(cands) > 1:
+            names = ", ".join(c["name"] for c in cands)
+            return ChatOut(text=f"Kaunsa {inp.customer}? ({names})", source=source)
+        return ChatOut(text=f"Customer '{inp.customer}' nahi mila.", source=source)
+    if inp.amount <= 0:
+        return ChatOut(text="Amount 0 se zyada honi chahiye.", source=source)
+
+    amount_paid = inp.amount if inp.payment_type == "Cash" else (inp.amount_paid or 0)
+    unpaid = 0 if inp.payment_type == "Cash" else max(0, inp.amount - amount_paid)
+    balance_after = cust["balance"] + unpaid
+    text = (
+        f"{cust['name']} ka PKR {int(inp.amount):,} sale draft ready hai. "
+        f"Confirm karein to {'udhar balance update hoga' if unpaid else 'cash sale record hogi'}."
+    )
+    return ChatOut(
+        text=text,
+        card_type="sale_confirmation",
+        card_data={
+            "customer_id": cust["id"],
+            "customer_name": cust["name"],
+            "amount": inp.amount,
+            "payment_type": inp.payment_type,
+            "amount_paid": amount_paid,
+            "balance_before": cust["balance"],
+            "balance_after": balance_after,
+            "item_name": "Quick sale",
+        },
+        action=ChatAction(
+            workflow="record_sale",
+            params={
+                "customer": cust["name"],
+                "customer_id": cust["id"],
+                "amount": inp.amount,
+                "payment_type": inp.payment_type,
+                "amount_paid": amount_paid,
+            },
+        ),
+        source=source,
+    )
+
+
+def _preview_add_customer(args: dict[str, Any], source: str) -> ChatOut:
+    inp = AddCustomerIn(**args)
+    # Fuzzy duplicate check (name substring against the live roster).
+    dupes = [c for c in workflows.store.customers if inp.name.strip().lower() in c["name"].lower()]
+    dupe = dupes[0]["name"] if dupes else None
+    text = (
+        f"'{dupe}' pehle se mojood hai. Phir bhi naya customer '{inp.name}' add karna hai? Confirm karein."
+        if dupe
+        else f"Naya customer '{inp.name}' add karne ke liye tayyar. Confirm karein."
+    )
+    return ChatOut(
+        text=text,
+        card_type="customer_confirmation",
+        card_data={
+            "name": inp.name,
+            "area": inp.area or "",
+            "type": inp.type,
+            "phone": inp.phone or "",
+            "balance": 0,
+            "duplicate": dupe,
+        },
+        action=ChatAction(
+            workflow="add_customer",
+            params={"name": inp.name, "area": inp.area, "type": inp.type, "phone": inp.phone},
+        ),
+        source=source,
+    )
 
 
 def _to_chat(res: WorkflowResult, card_type: str, source: str,

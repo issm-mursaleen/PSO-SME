@@ -11,7 +11,7 @@ OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 CORS_ORIGINS: list[str] = [
     o.strip()
     for o in os.getenv(
-        "CORS_ORIGINS", "http://localhost:3000,http://localhost:3002"
+        "CORS_ORIGINS", "http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002"
     ).split(",")
     if o.strip()
 ]

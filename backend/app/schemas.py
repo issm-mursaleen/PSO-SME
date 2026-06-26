@@ -57,14 +57,37 @@ class QueryIn(BaseModel):
 
 
 # ── Chat ────────────────────────────────────────────────────────────────────
+class CustomerCtx(BaseModel):
+    """A customer row sent by the frontend so the backend resolves names against
+    the live roster (the AppContext is the source of truth)."""
+    id: str
+    name: str
+    phone: str = ""
+    type: str = "Household"
+    channel: str = "WhatsApp"
+    neighborhood: str = ""
+    creditLimit: float = 0
+    balance: float = 0
+    healthScore: int = 70
+    lastVisitDays: int = 0
+
+
 class ChatContext(BaseModel):
     active_customer_id: Optional[str] = None
     current_page: Optional[str] = None
+    customers: list[CustomerCtx] = []
+
+
+class ChatHistoryMessage(BaseModel):
+    """A prior conversation turn, so the agent remembers earlier chats."""
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class ChatIn(BaseModel):
     message: str
     context: ChatContext = ChatContext()
+    history: list[ChatHistoryMessage] = []
 
 
 class ChatAction(BaseModel):
@@ -76,7 +99,9 @@ class ChatAction(BaseModel):
 
 class ChatOut(BaseModel):
     text: str
-    card_type: Optional[Literal["metric", "confirmation", "invoice"]] = None
+    card_type: Optional[
+        Literal["metric", "confirmation", "invoice", "sale_confirmation", "customer_confirmation"]
+    ] = None
     card_data: Optional[dict[str, Any]] = None
     action: Optional[ChatAction] = None
     source: Literal["llm", "fallback"] = "fallback"

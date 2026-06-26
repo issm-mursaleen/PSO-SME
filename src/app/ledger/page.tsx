@@ -1,345 +1,473 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useApp, Customer } from '@/context/AppContext';
-import { Icon } from '@/components/ui/Icon';
+import {
+  AlertTriangle,
+  BookOpen,
+  CalendarClock,
+  CheckCircle2,
+  CreditCard,
+  History,
+  ReceiptText,
+  WalletCards,
+} from 'lucide-react';
+import { useApp } from '@/context/AppContext';
+import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
+
+type LedgerEntry = {
+  id: string;
+  date: string;
+  type: 'Sale' | 'Payment' | 'Opening Balance';
+  description: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  ref: string;
+};
+
+function money(value: number) {
+  return `PKR ${value.toLocaleString()}`;
+}
 
 export default function UdharLedger() {
-  const { customers, recordPayment, transactions } = useApp();
-
-  // Selected customer for payment drawer
+  const { customers, invoices, recordPayment, transactions } = useApp();
+  // Default first; the ?customer= param is applied post-mount (see effect below)
+  // to avoid a server/client hydration mismatch.
+  const [selectedCustomerId, setSelectedCustomerId] = useState('cust-riaz');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [drawerCustomerId, setDrawerCustomerId] = useState('');
+
+  // Apply ?customer= once on the client (post-hydration) to avoid a mismatch.
+  useEffect(() => {
+    const cid = new URLSearchParams(window.location.search).get('customer');
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time post-hydration URL sync
+    if (cid) setSelectedCustomerId(cid);
+  }, []);
   const [repaymentAmount, setRepaymentAmount] = useState('');
 
-  // Filter out customers who owe money
-  const creditCustomers = useMemo(() => {
-    return customers.filter((c) => c.balance > 0);
-  }, [customers]);
+  const selectedCustomer = customers.find((customer) => customer.id === selectedCustomerId) ?? customers[0] ?? null;
 
-  // Calculations
-  const totalOutstanding = useMemo(() => {
-    return customers.reduce((sum, c) => sum + c.balance, 0);
-  }, [customers]);
+  const customerTransactions = useMemo(() => {
+    if (!selectedCustomer) return [];
+    return transactions.filter((transaction) => transaction.customerId === selectedCustomer.id);
+  }, [selectedCustomer, transactions]);
 
-  const activeDefaulters = creditCustomers.length;
+  const ledgerEntries = useMemo<LedgerEntry[]>(() => {
+    return [...customerTransactions].reverse().reduce<LedgerEntry[]>((entries, transaction) => {
+      const isPayment = transaction.type === 'Repayment';
+      const debit = isPayment ? 0 : transaction.amount;
+      const credit = isPayment ? transaction.amount : 0;
+      const previousBalance = entries[entries.length - 1]?.balance ?? 0;
+      const balance = previousBalance + debit - credit;
 
-  const avgOverdue = useMemo(() => {
-    const overdueC = creditCustomers.filter((c) => c.lastVisitDays > 7);
-    if (overdueC.length === 0) return 0;
-    const sum = overdueC.reduce((s, c) => s + c.lastVisitDays, 0);
-    return Math.round(sum / overdueC.length);
-  }, [creditCustomers]);
+      entries.push({
+        id: transaction.id,
+        date: transaction.date,
+        type: transaction.type === 'Credit Sale' ? 'Sale' : isPayment ? 'Payment' : 'Opening Balance',
+        description: transaction.type === 'Credit Sale' ? 'Credit sale added to khata' : 'Customer payment received',
+        debit,
+        credit,
+        balance,
+        ref: transaction.ref,
+      });
+      return entries;
+    }, []);
+  }, [customerTransactions]);
 
-  // Selected customer in drawer details
-  const selectedCustomerInfo = useMemo(() => {
-    return customers.find((c) => c.id === drawerCustomerId) || null;
-  }, [customers, drawerCustomerId]);
+  const paymentHistory = useMemo(
+    () => customerTransactions.filter((transaction) => transaction.type === 'Repayment'),
+    [customerTransactions],
+  );
 
-  const handleOpenDrawerForCustomer = (customerId: string) => {
-    setDrawerCustomerId(customerId);
+  const dueInvoices = useMemo(() => {
+    if (!selectedCustomer) return [];
+    return invoices.filter(
+      (invoice) =>
+        invoice.customerId === selectedCustomer.id &&
+        (invoice.status === 'Unpaid' || invoice.status === 'Partial' || invoice.status === 'Overdue'),
+    );
+  }, [invoices, selectedCustomer]);
+
+  const totalOutstanding = customers.reduce((sum, customer) => sum + customer.balance, 0);
+  const creditCustomers = customers.filter((customer) => customer.balance > 0);
+  const selectedBalance = selectedCustomer?.balance ?? 0;
+  const creditLimit = selectedCustomer?.creditLimit ?? 1;
+  const creditUsage = Math.min(100, Math.round((selectedBalance / creditLimit) * 100));
+  const overdueCustomers = creditCustomers.filter((customer) => customer.lastVisitDays > 10).length;
+  const recoveredAmount = transactions
+    .filter((transaction) => transaction.type === 'Repayment')
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+  const handleOpenPayment = () => {
+    if (!selectedCustomer) return;
+    setRepaymentAmount(selectedCustomer.balance.toString());
     setIsDrawerOpen(true);
-    // Autofill outstanding amount
-    const customer = customers.find((c) => c.id === customerId);
-    if (customer) {
-      setRepaymentAmount(customer.balance.toString());
-    }
   };
 
-  const handleOpenNewDrawer = () => {
-    if (creditCustomers.length > 0) {
-      setDrawerCustomerId(creditCustomers[0].id);
-      setRepaymentAmount(creditCustomers[0].balance.toString());
-    } else {
-      setDrawerCustomerId('');
-      setRepaymentAmount('');
-    }
-    setIsDrawerOpen(true);
+  const handleRecordRepayment = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedCustomer || !repaymentAmount) return;
+    recordPayment(selectedCustomer.id, parseFloat(repaymentAmount));
+    setRepaymentAmount('');
+    setIsDrawerOpen(false);
   };
-
-  const handleRecordRepayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (drawerCustomerId && repaymentAmount) {
-      recordPayment(drawerCustomerId, parseFloat(repaymentAmount));
-      setIsDrawerOpen(false);
-      setRepaymentAmount('');
-    }
-  };
-
-  const todayStr = new Date().toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
 
   return (
-    <div className="p-gutter space-y-6 max-w-[1600px] mx-auto w-full relative">
-      
-      {/* Page Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+    <div className="p-gutter space-y-4 max-w-[1600px] mx-auto w-full relative animate-fade-in">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-outline-variant pb-3">
         <div>
-          <h2 className="text-xl font-semibold text-foreground tracking-tight">Udhar Ledger</h2>
-          <p className="text-body-md text-on-surface-variant text-sm mt-1">
-            Centralized credit control dashboard and outstanding collection management.
+          <h1 className="text-xl font-semibold text-foreground tracking-tight">Ledger / Khata</h1>
+          <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mt-1">
+            Running balance, payment history, credit tracking, and due dates
           </p>
         </div>
         <button
-          onClick={handleOpenNewDrawer}
-          className="px-6 py-2.5 bg-primary text-on-primary font-bold text-body-md rounded-lg shadow-sm hover:brightness-110 active:scale-95 transition-all flex items-center gap-2 self-start md:self-auto text-sm"
+          type="button"
+          onClick={handleOpenPayment}
+          disabled={!selectedCustomer || selectedBalance <= 0}
+          className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/85 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground active:scale-[0.98] transition-all"
         >
-          <Icon name="payments" size={18} />
-          Record Repayment
+          <WalletCards className="size-3.5" />
+          Record Payment
         </button>
       </div>
 
-      {/* Summary Metrics Bento Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-md">
-        <div className="bg-surface-container-lowest p-md border border-outline-variant rounded-xl shadow-sm">
-          <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">Total Outstanding</p>
-          <h3 className="text-headline-lg font-bold text-tertiary text-2xl">PKR {totalOutstanding.toLocaleString()}</h3>
-          <p className="text-[10px] text-on-surface-variant mt-2 font-bold">Sum of active customer credits</p>
-        </div>
-        <div className="bg-surface-container-lowest p-md border border-outline-variant rounded-xl shadow-sm">
-          <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">Active Defaulters</p>
-          <h3 className="text-xl font-semibold text-foreground tracking-tight">{activeDefaulters} accounts</h3>
-          <p className="text-[10px] text-tertiary mt-2 font-bold">Requires credit recovery collection</p>
-        </div>
-        <div className="bg-surface-container-lowest p-md border border-outline-variant rounded-xl shadow-sm">
-          <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">Recovery Rate</p>
-          <h3 className="text-headline-lg font-bold text-primary text-2xl">74.2%</h3>
-          <p className="text-[10px] text-primary mt-2 font-bold">+2.4% progress this month</p>
-        </div>
-        <div className="bg-surface-container-lowest p-md border border-outline-variant rounded-xl shadow-sm">
-          <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">Avg Overdue Age</p>
-          <h3 className="text-xl font-semibold text-foreground tracking-tight">{avgOverdue} days</h3>
-          <p className="text-[10px] text-on-surface-variant mt-2 font-bold">Time since last repayment activity</p>
-        </div>
-      </div>
+      <section className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <MetricCard
+          label="Total Outstanding"
+          value={money(totalOutstanding)}
+          hint={`${creditCustomers.length} customer khatas open`}
+          hintIcon={<BookOpen className="size-3.5" />}
+          tone="warning"
+        />
+        <MetricCard
+          label="Selected Balance"
+          value={money(selectedBalance)}
+          hint={selectedCustomer?.name ?? 'No customer selected'}
+          hintIcon={<CreditCard className="size-3.5" />}
+        />
+        <MetricCard
+          label="Payments Collected"
+          value={money(recoveredAmount)}
+          hint={`${paymentHistory.length} payments for selected khata`}
+          hintIcon={<CheckCircle2 className="size-3.5" />}
+          tone="success"
+        />
+        <MetricCard
+          label="Overdue Accounts"
+          value={overdueCustomers}
+          hint="Needs follow-up"
+          hintIcon={<AlertTriangle className="size-3.5" />}
+          tone="danger"
+        />
+      </section>
 
-      {/* Table & Filters Section */}
-      <div className="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-outline-variant bg-surface-container-low flex justify-between items-center">
-          <h3 className="font-headline-sm text-headline-sm font-bold text-sm">Credit Balance Ledgers</h3>
-          <span className="text-xs text-on-surface-variant font-bold">Showing {creditCustomers.length} defaulters</span>
-        </div>
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <Card className="xl:col-span-3 overflow-hidden">
+          <div className="px-4 py-3 border-b border-outline-variant">
+            <h2 className="text-sm font-semibold tracking-tight">Customer Ledger</h2>
+            <p className="text-xs text-muted-foreground mt-1">Select a khata to view its running balance.</p>
+          </div>
+          <div className="p-3 space-y-2">
+            {customers.map((customer) => {
+              const active = selectedCustomer?.id === customer.id;
+              return (
+                <button
+                  key={customer.id}
+                  type="button"
+                  onClick={() => setSelectedCustomerId(customer.id)}
+                  className={`w-full text-left rounded-lg border p-3 transition-colors ${
+                    active
+                      ? 'border-foreground bg-muted text-foreground'
+                      : 'border-outline-variant bg-card hover:bg-muted text-foreground'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">{customer.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">{customer.neighborhood}</p>
+                    </div>
+                    <Badge tone={customer.balance > 0 ? 'warning' : 'success'}>
+                      {customer.balance > 0 ? 'Open' : 'Clear'}
+                    </Badge>
+                  </div>
+                  <p className="mt-3 font-mono text-sm font-bold">{money(customer.balance)}</p>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[800px]">
-            <thead className="bg-surface-variant text-label-md text-on-surface-variant border-b border-outline-variant">
-              <tr>
-                <th className="px-5 py-3">Customer</th>
-                <th className="px-5 py-3">Area</th>
-                <th className="px-5 py-3">Credit Limit</th>
-                <th className="px-5 py-3">Outstanding Credit</th>
-                <th className="px-5 py-3">Last Active Payment</th>
-                <th className="px-5 py-3">Credit Status</th>
-                <th className="px-5 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-outline-variant text-body-md">
-              {creditCustomers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-on-surface-variant italic">
-                    Great! All customer ledgers are currently settled. No credit defaults.
-                  </td>
-                </tr>
-              ) : (
-                creditCustomers.map((c) => {
-                  const percentOfLimit = Math.round((c.balance / c.creditLimit) * 100);
+        <div className="xl:col-span-9 space-y-4">
+          <Card className="p-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div>
+                <p className="font-mono text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
+                  Active Khata
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-foreground">{selectedCustomer?.name ?? 'No customer'}</h2>
+                {selectedCustomer && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {selectedCustomer.phone} · {selectedCustomer.neighborhood}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 min-w-full lg:min-w-[520px]">
+                <div className="rounded-lg bg-muted p-3">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Running Balance</p>
+                  <p className="mt-1 font-mono text-base font-bold">{money(selectedBalance)}</p>
+                </div>
+                <div className="rounded-lg bg-muted p-3">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Credit Limit</p>
+                  <p className="mt-1 font-mono text-base font-bold">{money(creditLimit)}</p>
+                </div>
+                <div className="rounded-lg bg-muted p-3 col-span-2 sm:col-span-1">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Due Tracking</p>
+                  <p className="mt-1 font-mono text-base font-bold">{dueInvoices.length} open</p>
+                </div>
+              </div>
+            </div>
 
-                  // Find last transaction for customer
-                  const lastTx = transactions.find((t) => t.customerId === c.id && t.type === 'Repayment');
-                  const lastPaidDate = lastTx ? lastTx.date.split(' ')[0] : 'N/A';
+            <div className="mt-4">
+              <div className="flex justify-between text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">
+                <span>Credit used</span>
+                <span>{creditUsage}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-surface-container-high overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${creditUsage >= 80 ? 'bg-danger' : creditUsage >= 50 ? 'bg-warning' : 'bg-success'}`}
+                  style={{ width: `${creditUsage}%` }}
+                />
+              </div>
+            </div>
+          </Card>
 
-                  return (
-                    <tr key={c.id} className="hover:bg-surface-container transition-colors">
-                      <td className="px-5 py-3">
-                        <div>
-                          <Link href={`/customers/${c.id}`} className="font-bold text-primary hover:underline block">
-                            {c.name}
-                          </Link>
-                          <span className="text-xs text-on-surface-variant font-numeric-data">{c.phone}</span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-3 text-on-surface-variant">{c.neighborhood}</td>
-                      <td className="px-5 py-3 font-numeric-data">PKR {c.creditLimit.toLocaleString()}</td>
-                      <td className="px-5 py-3 font-numeric-data font-bold text-tertiary">
-                        PKR {c.balance.toLocaleString()}
-                        <span className="block text-[10px] text-outline font-medium font-sans">
-                          {percentOfLimit}% limit reached
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-on-surface-variant font-numeric-data">{lastPaidDate}</td>
-                      <td className="px-5 py-3">
-                        {c.lastVisitDays > 10 ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-error-container text-on-error-container">
-                            {c.lastVisitDays} Days Overdue
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-secondary-container text-on-secondary-container">
-                            Due in {10 - c.lastVisitDays} Days
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleOpenDrawerForCustomer(c.id)}
-                            className="px-3 py-1.5 bg-primary text-on-primary font-label-md rounded-lg hover:opacity-90 transition-all text-xs font-bold"
-                          >
-                            Record Payment
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Right-side Drawer: Record Payment */}
-      {isDrawerOpen && (
-        <div className="fixed inset-0 z-[100] flex justify-end bg-inverse-surface/60 backdrop-blur-sm">
-          {/* Backdrop click clears */}
-          <div className="absolute inset-0" onClick={() => setIsDrawerOpen(false)}></div>
-          
-          <div className="relative w-full max-w-112 bg-white h-screen shadow-2xl border-l border-outline-variant flex flex-col z-10 transition-transform duration-300 transform translate-x-0">
-            {/* Drawer Header */}
-            <div className="p-6 border-b border-outline-variant flex justify-between items-center bg-surface-container-low">
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-outline-variant">
               <div className="flex items-center gap-2">
-                <Icon name="payments" className="text-primary" size={18} />
-                <h3 className="font-headline-sm text-headline-sm font-bold text-primary">Record Repayment</h3>
+                <History className="size-4 text-foreground" />
+                <h2 className="text-sm font-semibold tracking-tight">Running Balance Ledger</h2>
+              </div>
+              <Badge tone="info">Sale - Payment = Balance</Badge>
+            </div>
+            <div className="overflow-x-auto custom-scrollbar">
+              <Table className="min-w-[820px]">
+                <THead>
+                  <tr>
+                    <Th>Date</Th>
+                    <Th>Entry</Th>
+                    <Th>Reference</Th>
+                    <Th className="text-right">Sale</Th>
+                    <Th className="text-right">Payment</Th>
+                    <Th className="text-right">Balance</Th>
+                  </tr>
+                </THead>
+                <TBody>
+                  {ledgerEntries.length === 0 ? (
+                    <TRow>
+                      <Td colSpan={6} className="text-center text-muted-foreground italic py-8">
+                        No khata entries for this customer yet.
+                      </Td>
+                    </TRow>
+                  ) : (
+                    ledgerEntries.map((entry) => (
+                      <TRow key={entry.id}>
+                        <Td className="font-mono text-xs text-muted-foreground whitespace-nowrap">{entry.date}</Td>
+                        <Td>
+                          <div className="flex items-center gap-2">
+                            <Badge tone={entry.type === 'Payment' ? 'success' : 'warning'}>{entry.type}</Badge>
+                            <span className="text-sm text-foreground">{entry.description}</span>
+                          </div>
+                        </Td>
+                        <Td className="font-mono text-xs">{entry.ref}</Td>
+                        <Td className="text-right font-mono font-semibold text-warning-text">
+                          {entry.debit ? money(entry.debit) : '-'}
+                        </Td>
+                        <Td className="text-right font-mono font-semibold text-success-text">
+                          {entry.credit ? money(entry.credit) : '-'}
+                        </Td>
+                        <Td className="text-right font-mono font-bold text-foreground">{money(entry.balance)}</Td>
+                      </TRow>
+                    ))
+                  )}
+                </TBody>
+              </Table>
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <Card className="overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
+            <ReceiptText className="size-4 text-success" />
+            <h2 className="text-sm font-semibold tracking-tight">Payment History</h2>
+          </div>
+          <div className="overflow-x-auto custom-scrollbar">
+            <Table>
+              <THead>
+                <tr>
+                  <Th>Date</Th>
+                  <Th>Receipt</Th>
+                  <Th className="text-right">Amount</Th>
+                </tr>
+              </THead>
+              <TBody>
+                {paymentHistory.length === 0 ? (
+                  <TRow>
+                    <Td colSpan={3} className="text-center text-muted-foreground italic py-8">
+                      No payment received for this khata yet.
+                    </Td>
+                  </TRow>
+                ) : (
+                  paymentHistory.map((payment) => (
+                    <TRow key={payment.id}>
+                      <Td className="font-mono text-xs text-muted-foreground">{payment.date}</Td>
+                      <Td className="font-semibold">{payment.ref}</Td>
+                      <Td className="text-right font-mono font-bold text-success-text">{money(payment.amount)}</Td>
+                    </TRow>
+                  ))
+                )}
+              </TBody>
+            </Table>
+          </div>
+        </Card>
+
+        <Card className="overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
+            <CalendarClock className="size-4 text-warning" />
+            <h2 className="text-sm font-semibold tracking-tight">Due Date Tracking</h2>
+          </div>
+          <div className="overflow-x-auto custom-scrollbar">
+            <Table>
+              <THead>
+                <tr>
+                  <Th>Invoice</Th>
+                  <Th>Due Date</Th>
+                  <Th>Status</Th>
+                  <Th className="text-right">Amount</Th>
+                </tr>
+              </THead>
+              <TBody>
+                {dueInvoices.length === 0 ? (
+                  <TRow>
+                    <Td colSpan={4} className="text-center text-muted-foreground italic py-8">
+                      No unpaid invoice due dates for this customer.
+                    </Td>
+                  </TRow>
+                ) : (
+                  dueInvoices.map((invoice) => (
+                    <TRow key={invoice.id}>
+                      <Td>
+                        <Link href="/invoices" className="font-mono text-xs font-bold text-foreground hover:underline">
+                          {invoice.id}
+                        </Link>
+                      </Td>
+                      <Td className="font-mono text-xs text-muted-foreground">{invoice.dueDate}</Td>
+                      <Td>
+                        <Badge tone={invoice.status === 'Overdue' ? 'danger' : invoice.status === 'Partial' ? 'info' : 'warning'}>
+                          {invoice.status}
+                        </Badge>
+                      </Td>
+                      <Td className="text-right font-mono font-bold">{money(invoice.amount)}</Td>
+                    </TRow>
+                  ))
+                )}
+              </TBody>
+            </Table>
+          </div>
+        </Card>
+      </div>
+
+      {isDrawerOpen && selectedCustomer && (
+        <div className="fixed inset-0 z-[100] flex justify-end bg-inverse-surface/60 backdrop-blur-sm">
+          <button
+            aria-label="Close payment drawer"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setIsDrawerOpen(false)}
+          />
+
+          <div className="relative w-full max-w-md bg-white h-screen shadow-2xl border-l border-outline-variant flex flex-col z-10">
+            <div className="p-5 border-b border-outline-variant flex justify-between items-center bg-surface-container-low">
+              <div className="flex items-center gap-2">
+                <WalletCards className="size-4 text-foreground" />
+                <h3 className="text-sm font-semibold text-foreground">Record Khata Payment</h3>
               </div>
               <button
+                type="button"
                 onClick={() => setIsDrawerOpen(false)}
-                className="text-muted-foreground hover:bg-surface-container-high p-1.5 rounded-full transition-colors"
+                className="text-muted-foreground hover:bg-muted p-1.5 rounded-full transition-colors"
               >
-                <Icon name="close" size={18} />
+                ×
               </button>
             </div>
 
-            {/* Drawer Content */}
-            <form onSubmit={handleRecordRepayment} className="flex-1 p-6 space-y-6 overflow-y-auto custom-scrollbar">
-              
-              {/* Customer Selector */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-on-surface-variant block">Select Defaulter Customer</label>
-                <select
-                  required
-                  className="w-full border border-outline-variant rounded-lg p-3 text-sm bg-white outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                  value={drawerCustomerId}
-                  onChange={(e) => {
-                    const cid = e.target.value;
-                    setDrawerCustomerId(cid);
-                    const cust = customers.find((c) => c.id === cid);
-                    if (cust) setRepaymentAmount(cust.balance.toString());
-                  }}
-                >
-                  <option value="" disabled>-- Choose Defaulter --</option>
-                  {creditCustomers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} (Balance: PKR {c.balance.toLocaleString()})
-                    </option>
-                  ))}
-                </select>
+            <form onSubmit={handleRecordRepayment} className="flex-1 p-5 space-y-5 overflow-y-auto custom-scrollbar">
+              <div className="rounded-xl border border-outline-variant bg-surface-container-low p-4 space-y-2 text-xs">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground font-semibold">Customer</span>
+                  <span className="font-bold text-right">{selectedCustomer.name}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground font-semibold">Current Balance</span>
+                  <span className="font-mono font-bold text-warning-text">{money(selectedCustomer.balance)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground font-semibold">Credit Limit</span>
+                  <span className="font-mono font-bold">{money(selectedCustomer.creditLimit)}</span>
+                </div>
               </div>
 
-              {/* Balance Snapshot */}
-              {selectedCustomerInfo && (
-                <div className="p-4 bg-surface-container-low border border-outline-variant rounded-xl space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant font-bold">Outstanding credit:</span>
-                    <span className="font-bold text-tertiary font-numeric-data">PKR {selectedCustomerInfo.balance.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant font-bold">Max credit limit:</span>
-                    <span className="font-bold font-numeric-data">PKR {selectedCustomerInfo.creditLimit.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant font-bold">Defaulter age:</span>
-                    <span className="font-bold text-error font-numeric-data">{selectedCustomerInfo.lastVisitDays} days overdue</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Input Repayment Amount */}
               <div className="space-y-1">
-                <label className="text-xs font-bold text-on-surface-variant block">Amount Received (PKR)</label>
+                <label className="text-xs font-bold text-muted-foreground block">Payment Received (PKR)</label>
                 <input
                   required
                   type="number"
                   min="1"
-                  max={selectedCustomerInfo ? selectedCustomerInfo.balance : undefined}
-                  className="w-full border border-outline-variant rounded-lg p-3 text-sm font-numeric-data outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                  placeholder="e.g. 15000"
+                  className="w-full border border-outline-variant rounded-lg p-3 text-sm font-mono outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  placeholder="e.g. 2000"
                   value={repaymentAmount}
-                  onChange={(e) => setRepaymentAmount(e.target.value)}
+                  onChange={(event) => setRepaymentAmount(event.target.value)}
                 />
               </div>
 
-              {/* Payment Date */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-on-surface-variant block">Repayment Date</label>
-                <div className="relative">
-                  <Icon name="schedule" className="absolute left-3 top-1/2 -translate-y-1/2 text-outline" size={18} />
-                  <input
-                    className="w-full bg-surface-container-low border border-outline-variant rounded-lg pl-10 pr-4 py-3 text-xs outline-none text-on-surface-variant"
-                    readOnly
-                    type="text"
-                    value={todayStr}
-                  />
-                </div>
-              </div>
-
-              {/* Repayment Card Preview */}
-              {selectedCustomerInfo && repaymentAmount && (
-                <div className="border border-dashed border-outline-variant p-4 rounded-xl space-y-3 bg-primary-fixed/5">
-                  <p className="text-[10px] text-primary uppercase font-bold tracking-wider">Repayment Receipt Preview</p>
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-on-surface-variant">Customer:</span>
-                      <span className="font-bold text-on-surface">{selectedCustomerInfo.name}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-on-surface-variant">Repaid Value:</span>
-                      <span className="font-bold text-primary font-numeric-data">PKR {parseFloat(repaymentAmount).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between border-t border-outline-variant/50 pt-1.5 mt-1.5 font-bold">
-                      <span className="text-on-surface-variant">Remaining Debt:</span>
-                      <span className="font-numeric-data">
-                        PKR {Math.max(0, selectedCustomerInfo.balance - parseFloat(repaymentAmount)).toLocaleString()}
-                      </span>
-                    </div>
+              {repaymentAmount && (
+                <div className="border border-dashed border-outline-variant p-4 rounded-xl space-y-2 bg-primary-fixed/10">
+                  <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest font-semibold">
+                    Receipt Preview
+                  </p>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Payment</span>
+                    <span className="font-mono font-bold text-success-text">{money(parseFloat(repaymentAmount) || 0)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs border-t border-outline-variant/50 pt-2">
+                    <span className="text-muted-foreground">New Balance</span>
+                    <span className="font-mono font-bold">
+                      {money(Math.max(0, selectedCustomer.balance - (parseFloat(repaymentAmount) || 0)))}
+                    </span>
                   </div>
                 </div>
               )}
 
-              {/* Drawer Footer Actions */}
-              <div className="flex gap-3 pt-6 border-t border-outline-variant mt-auto">
+              <div className="flex gap-3 pt-5 border-t border-outline-variant mt-auto">
                 <button
                   type="button"
                   onClick={() => setIsDrawerOpen(false)}
-                  className="flex-1 py-3 border border-outline-variant text-on-surface-variant rounded-lg hover:bg-surface-container transition-all text-xs font-bold"
+                  className="flex-1 py-3 border border-outline-variant text-muted-foreground rounded-lg hover:bg-muted transition-all text-xs font-bold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 bg-primary text-on-primary rounded-lg hover:opacity-90 active:scale-95 transition-all text-xs font-bold"
+                  className="flex-1 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/85 active:scale-95 transition-all text-xs font-bold"
                 >
-                  Confirm Payment
+                  Save Payment
                 </button>
               </div>
-
             </form>
           </div>
         </div>
       )}
-
     </div>
   );
 }

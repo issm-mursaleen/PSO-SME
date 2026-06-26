@@ -40,6 +40,12 @@ customers: list[dict[str, Any]] = [
         "creditLimit": 80000, "balance": 12000, "status": "Active",
         "healthScore": 60, "lastVisitDays": 5,
     },
+    {
+        "id": "cust-nadeem", "name": "Nadeem Chacha", "phone": "+92 300 2223344",
+        "type": "Household", "channel": "WhatsApp", "neighborhood": "Nazimabad",
+        "creditLimit": 30000, "balance": 8500, "status": "Active",
+        "healthScore": 69, "lastVisitDays": 3,
+    },
 ]
 
 invoices: list[dict[str, Any]] = [
@@ -79,6 +85,34 @@ def next_txn_id() -> str:
 
 def next_customer_id() -> str:
     return _next("cust", "cust-")
+
+
+def sync_customers(rows: list[dict[str, Any]]) -> None:
+    """Replace the roster with the live list the frontend sent, so chat can
+    resolve any customer the user has (the frontend AppContext is the source of
+    truth). In-place slice assignment keeps the same list object the workflows
+    already reference."""
+    if not rows:
+        return
+    mapped = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "phone": r.get("phone", ""),
+            "type": r.get("type", "Household"),
+            "channel": r.get("channel", "WhatsApp"),
+            "neighborhood": r.get("neighborhood", ""),
+            "creditLimit": r.get("creditLimit", 0),
+            "balance": r.get("balance", 0),
+            "status": r.get("status", "Active"),
+            "healthScore": r.get("healthScore", 70),
+            "lastVisitDays": r.get("lastVisitDays", 0),
+        }
+        for r in rows
+        if r.get("id") and r.get("name")
+    ]
+    with _lock:
+        customers[:] = mapped
 
 
 def find_customer(query: str) -> Optional[dict[str, Any]]:

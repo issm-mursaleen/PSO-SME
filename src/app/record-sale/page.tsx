@@ -247,22 +247,119 @@ export default function RecordSale() {
     setHasShared(false);
   };
 
-  // Simulated Printer Dispatch
+  // Build an 80mm thermal-receipt HTML document for the current sale.
+  const buildReceiptHtml = () => {
+    const name = activeCustomer ? activeCustomer.name : 'Walk-in Customer';
+    const date = new Date().toLocaleString('en-GB');
+    const pkr = (n: number) => `Rs ${n.toLocaleString()}`;
+    const subtotal = rows.reduce((s, r) => s + r.quantity * r.price, 0);
+    const dueDate = new Date(Date.now() + 7 * 86400000).toLocaleDateString('en-GB');
+
+    const itemRows = rows
+      .map(
+        (r) => `<tr><td>${r.name || 'Item'}</td><td class="r">${r.quantity}</td>` +
+          `<td class="r">${r.price.toLocaleString()}</td>` +
+          `<td class="r">${(r.quantity * r.price - r.discount).toLocaleString()}</td></tr>`,
+      )
+      .join('');
+
+    let payLines = '';
+    if (paymentType === 'Cash') {
+      payLines =
+        `<div class="row"><span>Received</span><span>${pkr(amountReceived)}</span></div>` +
+        `<div class="row"><span>Change</span><span>${pkr(changeDue)}</span></div>`;
+    } else if (paymentType === 'Udhar') {
+      payLines =
+        `<div class="row b"><span>UDHAR DUE</span><span>${pkr(unpaidAmount)}</span></div>` +
+        `<div class="row"><span>Due in</span><span>7 days (${dueDate})</span></div>`;
+    } else {
+      payLines =
+        `<div class="row"><span>Paid</span><span>${pkr(amountReceived)}</span></div>` +
+        `<div class="row b"><span>UDHAR DUE</span><span>${pkr(unpaidAmount)}</span></div>` +
+        `<div class="row"><span>Due in</span><span>7 days (${dueDate})</span></div>`;
+    }
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Receipt ${createdInvoiceId}</title>
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  * { font-family: 'Courier New', monospace; box-sizing: border-box; }
+  body { width: 80mm; margin: 0; padding: 8px 10px; color: #000; font-size: 12px; }
+  .c { text-align: center; } .b { font-weight: bold; } .r { text-align: right; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: 2px; }
+  .row { display: flex; justify-content: space-between; margin: 1px 0; }
+  hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  td { font-size: 11px; padding: 1px 0; vertical-align: top; }
+  .head td { font-weight: bold; border-bottom: 1px solid #000; }
+  .small { font-size: 10px; }
+</style></head><body>
+  <div class="c"><h1>PSO SME</h1><div class="small">Karachi Hub &bull; Sales Receipt</div></div>
+  <hr/>
+  <div class="row"><span>Invoice</span><span>${createdInvoiceId}</span></div>
+  <div class="row"><span>Date</span><span>${date}</span></div>
+  <div class="row"><span>Customer</span><span>${name}</span></div>
+  <hr/>
+  <table>
+    <tr class="head"><td>Item</td><td class="r">Qty</td><td class="r">Rate</td><td class="r">Amt</td></tr>
+    ${itemRows}
+  </table>
+  <hr/>
+  <div class="row"><span>Subtotal</span><span>${pkr(subtotal)}</span></div>
+  ${totalDiscount > 0 ? `<div class="row"><span>Discount</span><span>- ${pkr(totalDiscount)}</span></div>` : ''}
+  <div class="row b" style="font-size:13px"><span>TOTAL</span><span>${pkr(grandTotal)}</span></div>
+  <div class="row"><span>Payment</span><span>${paymentType}</span></div>
+  ${payLines}
+  ${notes.trim() ? `<hr/><div class="small">Note: ${notes}</div>` : ''}
+  <hr/>
+  <div class="c small">Shukriya! Phir tashreef laaiye.</div>
+</body></html>`;
+  };
+
+  // Print the thermal receipt via a hidden iframe (avoids popup blockers).
   const handlePrintReceipt = () => {
     setIsPrinting(true);
-    triggerToast('Spooling invoice to receipt thermal printer...', 'info');
-    
+    triggerToast('Spooling invoice to thermal printer...', 'info');
+
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(buildReceiptHtml());
+      doc.close();
+    }
+
+    // Give the iframe a tick to lay out, then invoke the print dialog.
     setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
       setIsPrinting(false);
       setHasPrinted(true);
-      triggerToast('Thermal printer receipt generated.', 'success');
-    }, 1500);
+      triggerToast('Thermal receipt sent to printer.', 'success');
+      setTimeout(() => iframe.remove(), 1000);
+    }, 400);
   };
 
   // WhatsApp share: take the user to the customer's outreach console with the
   // receipt pre-filled in the composer, so they can send it to him directly.
   const handleShareWhatsApp = () => {
-    const summaryMsg = `Salam ${activeCustomer ? activeCustomer.name : 'Customer'}, this is a digital invoice receipt from ALARA SME. Invoice Ref: ${createdInvoiceId}. Total: PKR ${grandTotal.toLocaleString()}.${notes.trim() ? ` Note: ${notes}.` : ''} Shukriya.`;
+    const name = activeCustomer ? activeCustomer.name : 'Customer';
+    const dueDays = 7; // credit term — matches the invoice dueDate (date + 7 days)
+    const dueDate = new Date(Date.now() + dueDays * 86400000).toLocaleDateString('en-GB');
+    const pkr = (n: number) => `PKR ${n.toLocaleString()}`;
+    const noteStr = notes.trim() ? ` Note: ${notes}.` : '';
+
+    const base = `Salam ${name}, PSO SME se aap ki kharidari. Invoice ${createdInvoiceId} — ${pkr(grandTotal)} ka saman bika.`;
+    let summaryMsg: string;
+    if (paymentType === 'Cash') {
+      summaryMsg = `${base} Cash payment ${pkr(grandTotal)} mukammal mil gayi.${noteStr} Shukriya!`;
+    } else if (paymentType === 'Udhar') {
+      summaryMsg = `${base} Yeh udhar (credit) par hai — ${pkr(unpaidAmount)} baqi hai, jo ${dueDays} din mein (due ${dueDate}) clear karna hai.${noteStr} Shukriya!`;
+    } else {
+      // Partial
+      summaryMsg = `${base} ${pkr(amountReceived)} mil gaye, baqi ${pkr(unpaidAmount)} udhar par hai — ${dueDays} din mein (due ${dueDate}) clear karna hai.${noteStr} Shukriya!`;
+    }
 
     if (selectedCustomerId !== 'walk-in') {
       // Log the receipt into the customer's WhatsApp chat, then open their
@@ -276,7 +373,7 @@ export default function RecordSale() {
       setIsSharing(true);
       triggerToast('Generating WhatsApp invoice link...', 'info');
       setTimeout(() => {
-        navigator.clipboard?.writeText(`https://alara-sme.pk/receipt/${createdInvoiceId}`);
+        navigator.clipboard?.writeText(`https://pso-sme.pk/receipt/${createdInvoiceId}`);
         triggerToast('Walk-in receipt link copied to clipboard!', 'success');
         setIsSharing(false);
         setHasShared(true);
@@ -712,8 +809,30 @@ export default function RecordSale() {
 
       {/* Success Confirmation Modal (Cleaned up overlay to avoid browser CSS breaks) */}
       {showSuccessModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 anim-fade-in">
-          <div className="bg-white text-stone-900 rounded-2xl w-full max-w-112 overflow-hidden shadow-2xl border border-stone-200 anim-scale-up">
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 anim-fade-in"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowSuccessModal(false);
+              setHasPrinted(false);
+              setHasShared(false);
+            }
+          }}
+        >
+          <div className="relative bg-white text-stone-900 rounded-2xl w-full max-w-112 overflow-hidden shadow-2xl border border-stone-200 anim-scale-up">
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowSuccessModal(false);
+                setHasPrinted(false);
+                setHasShared(false);
+              }}
+              aria-label="Close"
+              className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-full text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+            >
+              <Icon name="close" size={18} />
+            </button>
             <div className="p-8 text-center">
               
               {/* Animated Glowing check icon */}

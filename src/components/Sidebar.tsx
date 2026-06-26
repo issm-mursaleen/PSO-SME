@@ -100,7 +100,7 @@ export const Sidebar: React.FC = () => {
       {/* Brand */}
       <div className="px-4 pt-5 pb-3 flex flex-col items-center text-center gap-0.5 border-b border-outline-variant shrink-0">
         <p className="text-foreground text-[13px] font-extrabold font-mono tracking-[0.18em] uppercase leading-tight">
-          ALARA OS
+          PSO SME
         </p>
         <p className="text-muted-foreground text-[9px] leading-tight tracking-wide uppercase">
           Customer 360 · Karachi Hub

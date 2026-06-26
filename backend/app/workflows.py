@@ -156,7 +156,7 @@ def create_invoice(inp: CreateInvoiceIn) -> WorkflowResult:
         "amount": total, "status": "Unpaid", "paymentType": "Udhar",
     })
     phone = "".join(ch for ch in cust["phone"] if ch.isdigit())
-    text = f"Salam {cust['name']}, aap ka bill {_pkr(total)} ({inv_id}) - ALARA SME. Shukriya."
+    text = f"Salam {cust['name']}, aap ka bill {_pkr(total)} ({inv_id}) - PSO SME. Shukriya."
     wa_link = f"https://wa.me/{phone}?text={text.replace(' ', '%20')}" if phone else None
     return WorkflowResult(ok=True, workflow="create_invoice",
                           confirm=f"Bill ban gaya — {_pkr(total)}. WhatsApp pe bhejein?",
