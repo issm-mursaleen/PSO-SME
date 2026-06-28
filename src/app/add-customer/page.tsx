@@ -16,8 +16,6 @@ export default function AddCustomer() {
   const [preferredChannel, setPreferredChannel] = useState('WhatsApp');
   const [neighborhood, setNeighborhood] = useState('');
   const [address, setAddress] = useState('');
-  const [creditLimit, setCreditLimit] = useState('50000');
-  const [openingBalance, setOpeningBalance] = useState('0');
   const [status, setStatus] = useState<'Active' | 'Inactive'>('Active');
   const [notes, setNotes] = useState('');
 
@@ -44,8 +42,6 @@ export default function AddCustomer() {
       channel: preferredChannel,
       neighborhood,
       address,
-      creditLimit: parseFloat(creditLimit) || 0,
-      balance: parseFloat(openingBalance) || 0,
       status,
       notes,
     });
@@ -107,7 +103,7 @@ export default function AddCustomer() {
         <div className="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm overflow-hidden">
           <div className="p-6 border-b border-outline-variant bg-surface-container-low">
             <h3 className="font-headline-sm text-headline-sm text-primary font-bold text-lg">Customer Profile Details</h3>
-            <p className="text-body-sm text-on-surface-variant text-xs mt-1">Fields marked with an asterisk (*) are mandatory for credit limits.</p>
+            <p className="text-body-sm text-on-surface-variant text-xs mt-1">Fields marked with an asterisk (*) are mandatory.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="p-6 space-y-8">
@@ -195,40 +191,8 @@ export default function AddCustomer() {
                 </div>
               </div>
 
-              {/* Right Column: Financials & Status */}
+              {/* Right Column: Status & Notes */}
               <div className="space-y-6">
-                <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant">
-                  <h4 className="text-label-md text-primary uppercase tracking-wider mb-4 font-bold text-xs">Financial Configuration</h4>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-body-sm font-bold text-on-surface-variant mb-1.5 text-xs">Udhar Limit (PKR)</label>
-                      <div className="relative">
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant font-label-md text-xs font-bold">Max Credit</span>
-                        <input
-                          type="number"
-                          className="w-full border border-outline-variant rounded-lg p-3 text-body-md font-numeric-data focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all outline-none"
-                          value={creditLimit}
-                          onChange={(e) => setCreditLimit(e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-body-sm font-bold text-on-surface-variant mb-1.5 text-xs">Opening Balance (PKR)</label>
-                      <div className="relative">
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant font-label-md text-xs font-bold">Initial Due</span>
-                        <input
-                          type="number"
-                          className="w-full border border-outline-variant rounded-lg p-3 text-body-md font-numeric-data focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all outline-none"
-                          value={openingBalance}
-                          onChange={(e) => setOpeningBalance(e.target.value)}
-                        />
-                      </div>
-                      <p className="text-[11px] text-outline mt-1 italic">Use negative values for advance payments.</p>
-                    </div>
-                  </div>
-                </div>
-
                 <div>
                   <label className="block text-body-sm font-bold text-on-surface-variant mb-1.5 text-xs">Profile Status</label>
                   <div className="flex gap-4">
@@ -264,7 +228,7 @@ export default function AddCustomer() {
                   <textarea
                     rows={4}
                     className="w-full border border-outline-variant rounded-lg p-3 text-body-md focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all outline-none resize-none"
-                    placeholder="Special delivery instructions, credit history notes, or family relations..."
+                    placeholder="Special delivery instructions, preferences, or family relations..."
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                   ></textarea>
@@ -300,7 +264,7 @@ export default function AddCustomer() {
             </div>
             <div>
               <h4 className="font-headline-sm text-label-md text-on-surface font-bold text-xs">KYC Verified</h4>
-              <p className="text-body-sm text-on-surface-variant text-xs mt-0.5">Profiles with full addresses get 20% higher credit limit approval.</p>
+              <p className="text-body-sm text-on-surface-variant text-xs mt-0.5">Profiles with full addresses unlock faster delivery and outreach.</p>
             </div>
           </div>
           <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex gap-4 items-center shadow-sm">

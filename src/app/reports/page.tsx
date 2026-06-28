@@ -11,67 +11,160 @@ import {
   Filter,
   RefreshCcw,
   FileSpreadsheet,
-  ArrowUpRight,
   TrendingUp,
-  AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
 
-const PRODUCT_BASELINE = [
-  { name: 'Dal Chana', units: 450, revenue: 58500, stock: 34 },
-  { name: 'Sugar 1kg', units: 380, revenue: 51300, stock: 22 },
-  { name: 'Basmati Rice 25kg', units: 290, revenue: 870000, stock: 8 },
-  { name: 'Nestle Milkpak', units: 180, revenue: 39600, stock: 6 },
-  { name: 'Cooking Oil 5L', units: 140, revenue: 350000, stock: 4 },
-  { name: 'Tapal Danedar', units: 96, revenue: 52800, stock: 3 },
-];
-
 function money(value: number) {
   return `PKR ${value.toLocaleString()}`;
 }
 
+function escapePdfText(value: string) {
+  return value
+    .replace(/[\\()]/g, '\\$&')
+    .replace(/[^\x20-\x7E]/g, ' ');
+}
+
+function createPdf(lines: string[]) {
+  const pageLines = 42;
+  const pages = Array.from({ length: Math.max(1, Math.ceil(lines.length / pageLines)) }, (_, index) =>
+    lines.slice(index * pageLines, (index + 1) * pageLines),
+  );
+  const pageObjectNumbers = pages.map((_, index) => 4 + index * 2);
+  const objects: string[] = [];
+
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[2] = `<< /Type /Pages /Kids [${pageObjectNumbers.map((number) => `${number} 0 R`).join(' ')}] /Count ${pages.length} >>`;
+  objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+
+  pages.forEach((page, index) => {
+    const pageObject = pageObjectNumbers[index];
+    const contentObject = pageObject + 1;
+    const text = page
+      .map((line, lineIndex) => {
+        const fontSize = lineIndex === 0 ? 16 : lineIndex === 2 ? 9 : 10;
+        const font = lineIndex === 0 ? '/F1 16 Tf' : `/F1 ${fontSize} Tf`;
+        return `${font} (${escapePdfText(line)}) Tj T*`;
+      })
+      .join('\n');
+    const stream = `BT\n50 790 Td\n15 TL\n${text}\nET`;
+
+    objects[pageObject] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObject} 0 R >>`;
+    objects[contentObject] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  });
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let index = 1; index < objects.length; index += 1) {
+    offsets[index] = pdf.length;
+    pdf += `${index} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let index = 1; index < objects.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdf], { type: 'application/pdf' });
+}
+
 export default function ReportsPage() {
-  const { customers, invoices, transactions } = useApp();
+  const { customers, invoices, inventory } = useApp();
 
   // Active tab state: 'sales' | 'customers' | 'products'
   const [activeTab, setActiveTab] = useState<'sales' | 'customers' | 'products'>('sales');
 
+  // Timeframe filter state: 'All' | 'Daily' | 'Weekly' | 'Monthly'
+  const [timeframe, setTimeframe] = useState<'All' | 'Daily' | 'Weekly' | 'Monthly'>('All');
+
   // --- Filter States ---
   // Sales Tab filters
   const [salesSearch, setSalesSearch] = useState('');
-  const [salesPaymentType, setSalesPaymentType] = useState('All');
-  const [salesStatus, setSalesStatus] = useState('All');
 
   // Customers Tab filters
   const [customerSearch, setCustomerSearch] = useState('');
-  const [customerBalanceStatus, setCustomerBalanceStatus] = useState('All');
+  const [customerRecency, setCustomerRecency] = useState('All');
   const [customerStatus, setCustomerStatus] = useState('All');
+
+  // Lifetime sales per customer (real, from invoices).
+  const lifetimeById = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const inv of invoices) map[inv.customerId] = (map[inv.customerId] ?? 0) + inv.amount;
+    return map;
+  }, [invoices]);
+  const lifetimeOf = (id: string) => lifetimeById[id] ?? 0;
 
   // Products Tab filters
   const [productSearch, setProductSearch] = useState('');
   const [productStockLevel, setProductStockLevel] = useState('All');
 
-  // --- Dynamic Base Stats for Metric Cards ---
-  const totalSales = useMemo(() => {
-    // Incorporate dynamic invoice amounts
-    return invoices.reduce((sum, inv) => sum + inv.amount, 0) + 46850;
+  // --- Timeframe Checker Helper ---
+  // Anchored to the most recent date actually present in the ledger (not the
+  // real wall clock) so "Daily/Weekly/Monthly" stay meaningful against the
+  // demo dataset's own dates instead of always returning empty.
+  const anchor = useMemo(() => {
+    const dates = invoices.map((i) => new Date(i.date.split(' ')[0]))
+      .filter((d) => !Number.isNaN(d.getTime()));
+    if (!dates.length) return new Date();
+    const max = new Date(Math.max(...dates.map((d) => d.getTime())));
+    max.setHours(0, 0, 0, 0);
+    return max;
   }, [invoices]);
 
-  const totalOutstanding = useMemo(() => {
-    return customers.reduce((sum, customer) => sum + customer.balance, 0);
-  }, [customers]);
+  const isDateInTimeframe = useMemo(() => {
+    return (dateStr: string) => {
+      if (timeframe === 'All') return true;
+      const d = new Date(dateStr.split(' ')[0]);
+      d.setHours(0, 0, 0, 0);
+      if (d.getTime() > anchor.getTime()) return false;
+      const diffDays = Math.round((anchor.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+      if (timeframe === 'Daily') return diffDays === 0;
+      if (timeframe === 'Weekly') return diffDays <= 6;
+      return diffDays <= 29; // Monthly
+    };
+  }, [timeframe, anchor]);
 
-  const recoveredAmount = useMemo(() => {
-    return transactions
-      .filter((transaction) => transaction.type === 'Repayment')
-      .reduce((sum, transaction) => sum + transaction.amount, 0) + 8000;
-  }, [transactions]);
+  // --- Dynamic Stats based on Timeframe — real sums only, no baselines ────
+  const salesInTimeframe = useMemo(
+    () => invoices.filter((inv) => isDateInTimeframe(inv.date)).reduce((sum, inv) => sum + inv.amount, 0),
+    [invoices, isDateInTimeframe],
+  );
 
-  const lowStockCount = useMemo(() => {
-    return PRODUCT_BASELINE.filter((product) => product.stock <= 8).length;
-  }, []);
+  const invoicesInTimeframe = useMemo(
+    () => invoices.filter((inv) => isDateInTimeframe(inv.date)).length,
+    [invoices, isDateInTimeframe],
+  );
+
+  // --- Real product catalog: inventory + actual sold quantity/revenue ─────
+  const productCatalog = useMemo(() => {
+    const sales = new Map<string, { units: number; revenue: number }>();
+    for (const inv of invoices) {
+      if (!isDateInTimeframe(inv.date)) continue;
+      for (const item of inv.items) {
+        const row = sales.get(item.name) ?? { units: 0, revenue: 0 };
+        row.units += item.quantity;
+        row.revenue += item.total;
+        sales.set(item.name, row);
+      }
+    }
+    const rows: { name: string; units: number; revenue: number; stock: number | null; reorder: number | null }[] = inventory.map((item) => {
+      const s = sales.get(item.product) ?? { units: 0, revenue: 0 };
+      return { name: item.product, units: s.units, revenue: s.revenue, stock: item.current, reorder: item.reorder };
+    });
+    const tracked = new Set(inventory.map((i) => i.product));
+    for (const [name, s] of sales) {
+      if (!tracked.has(name)) rows.push({ name, units: s.units, revenue: s.revenue, stock: null, reorder: null });
+    }
+    return rows;
+  }, [inventory, invoices, isDateInTimeframe]);
+
+  const lowStockCount = useMemo(
+    () => inventory.filter((item) => item.current <= item.reorder).length,
+    [inventory],
+  );
 
   // --- Filter logic for Invoices ---
   const filteredInvoices = useMemo(() => {
@@ -79,11 +172,10 @@ export default function ReportsPage() {
       const matchesSearch =
         inv.id.toLowerCase().includes(salesSearch.toLowerCase()) ||
         inv.customerName.toLowerCase().includes(salesSearch.toLowerCase());
-      const matchesPaymentType = salesPaymentType === 'All' || inv.paymentType === salesPaymentType;
-      const matchesStatus = salesStatus === 'All' || inv.status === salesStatus;
-      return matchesSearch && matchesPaymentType && matchesStatus;
+      const matchesTimeframe = isDateInTimeframe(inv.date);
+      return matchesSearch && matchesTimeframe;
     });
-  }, [invoices, salesSearch, salesPaymentType, salesStatus]);
+  }, [invoices, salesSearch, isDateInTimeframe]);
 
   // --- Filter logic for Customers ---
   const filteredCustomers = useMemo(() => {
@@ -92,34 +184,44 @@ export default function ReportsPage() {
         cust.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
         cust.neighborhood.toLowerCase().includes(customerSearch.toLowerCase()) ||
         cust.phone.includes(customerSearch);
-      const matchesBalance =
-        customerBalanceStatus === 'All' ||
-        (customerBalanceStatus === 'Has Balance' ? cust.balance > 0 : cust.balance === 0);
+      const matchesRecency =
+        customerRecency === 'All' ||
+        (customerRecency === 'Active' ? cust.lastVisitDays < 14 : cust.lastVisitDays >= 14);
       const matchesStatus = customerStatus === 'All' || cust.status === customerStatus;
-      return matchesSearch && matchesBalance && matchesStatus;
-    });
-  }, [customers, customerSearch, customerBalanceStatus, customerStatus]);
 
-  // --- Filter logic for Products ---
+      let matchesTimeframe = true;
+      if (timeframe === 'Daily') {
+        matchesTimeframe = cust.lastVisitDays <= 1;
+      } else if (timeframe === 'Weekly') {
+        matchesTimeframe = cust.lastVisitDays <= 7;
+      } else if (timeframe === 'Monthly') {
+        matchesTimeframe = cust.lastVisitDays <= 30;
+      }
+
+      return matchesSearch && matchesRecency && matchesStatus && matchesTimeframe;
+    });
+  }, [customers, customerSearch, customerRecency, customerStatus, timeframe]);
+
+  // --- Filter logic for Products (real catalog: inventory + actual sales) ──
   const filteredProducts = useMemo(() => {
-    return PRODUCT_BASELINE.filter((prod) => {
+    return productCatalog.filter((prod) => {
       const matchesSearch = prod.name.toLowerCase().includes(productSearch.toLowerCase());
       const matchesStock =
         productStockLevel === 'All' ||
-        (productStockLevel === 'Low Stock' ? prod.stock <= 8 : prod.stock > 8);
+        prod.stock === null ||
+        (productStockLevel === 'Low Stock' ? prod.stock <= (prod.reorder ?? 0) : prod.stock > (prod.reorder ?? 0));
       return matchesSearch && matchesStock;
     });
-  }, [productSearch, productStockLevel]);
+  }, [productCatalog, productSearch, productStockLevel]);
 
   // Reset all filters in the active view
   const handleResetFilters = () => {
+    setTimeframe('All');
     if (activeTab === 'sales') {
       setSalesSearch('');
-      setSalesPaymentType('All');
-      setSalesStatus('All');
     } else if (activeTab === 'customers') {
       setCustomerSearch('');
-      setCustomerBalanceStatus('All');
+      setCustomerRecency('All');
       setCustomerStatus('All');
     } else {
       setProductSearch('');
@@ -129,23 +231,23 @@ export default function ReportsPage() {
 
   // Check if any filter is active in the current tab
   const isFilterActive = useMemo(() => {
+    const isTimeframeFiltered = timeframe !== 'All';
     if (activeTab === 'sales') {
-      return salesSearch !== '' || salesPaymentType !== 'All' || salesStatus !== 'All';
+      return salesSearch !== '' || isTimeframeFiltered;
     } else if (activeTab === 'customers') {
-      return customerSearch !== '' || customerBalanceStatus !== 'All' || customerStatus !== 'All';
+      return customerSearch !== '' || customerRecency !== 'All' || customerStatus !== 'All' || isTimeframeFiltered;
     } else {
-      return productSearch !== '' || productStockLevel !== 'All';
+      return productSearch !== '' || productStockLevel !== 'All' || isTimeframeFiltered;
     }
   }, [
     activeTab,
     salesSearch,
-    salesPaymentType,
-    salesStatus,
     customerSearch,
-    customerBalanceStatus,
+    customerRecency,
     customerStatus,
     productSearch,
     productStockLevel,
+    timeframe,
   ]);
 
   // Simulated CSV Export logic for tabular data
@@ -155,38 +257,35 @@ export default function ReportsPage() {
     let filename = 'report.csv';
 
     if (activeTab === 'sales') {
-      headers = ['Invoice ID', 'Customer', 'Date', 'Payment Type', 'Status', 'Amount (PKR)'];
+      headers = ['Invoice ID', 'Customer', 'Date', 'Amount (PKR)'];
       rows = filteredInvoices.map((inv) => [
         inv.id,
         inv.customerName,
         inv.date,
-        inv.paymentType,
-        inv.status,
         inv.amount.toString(),
       ]);
-      filename = `sales_report_${new Date().toISOString().split('T')[0]}.csv`;
+      filename = `sales_report_${timeframe.toLowerCase()}_${new Date().toISOString().split('T')[0]}.csv`;
     } else if (activeTab === 'customers') {
-      headers = ['Customer Name', 'Phone', 'Neighborhood', 'Health Score', 'Status', 'Owed Balance (Baqi)', 'Limit'];
+      headers = ['Customer Name', 'Phone', 'Neighborhood', 'Status', 'Lifetime Sales (PKR)', 'Last Visit (days)'];
       rows = filteredCustomers.map((cust) => [
         cust.name,
         cust.phone,
         cust.neighborhood,
-        cust.healthScore.toString(),
         cust.status,
-        cust.balance.toString(),
-        cust.creditLimit.toString(),
+        lifetimeOf(cust.id).toString(),
+        cust.lastVisitDays.toString(),
       ]);
-      filename = `customer_report_${new Date().toISOString().split('T')[0]}.csv`;
+      filename = `customer_report_${timeframe.toLowerCase()}_${new Date().toISOString().split('T')[0]}.csv`;
     } else {
       headers = ['Product Name', 'Units Sold', 'Total Revenue (PKR)', 'Current Stock', 'Stock Status'];
       rows = filteredProducts.map((p) => [
         p.name,
         p.units.toString(),
         p.revenue.toString(),
-        p.stock.toString(),
-        p.stock <= 8 ? 'Low Stock' : 'Healthy',
+        p.stock !== null ? p.stock.toString() : 'Untracked',
+        p.stock !== null && p.reorder !== null ? (p.stock <= p.reorder ? 'Low Stock' : 'Healthy') : 'Untracked',
       ]);
-      filename = `product_report_${new Date().toISOString().split('T')[0]}.csv`;
+      filename = `product_report_${timeframe.toLowerCase()}_${new Date().toISOString().split('T')[0]}.csv`;
     }
 
     const csvContent =
@@ -201,6 +300,34 @@ export default function ReportsPage() {
     document.body.removeChild(link);
   };
 
+  const handleDownloadSalesPdf = () => {
+    const total = filteredInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
+    const appliedFilters = [
+      `Timeframe: ${timeframe}`,
+      salesSearch ? `Search: ${salesSearch}` : null,
+    ].filter(Boolean).join(' | ');
+    const lines = [
+      'PSO SME - Sales & Invoices Report',
+      `Generated: ${new Date().toLocaleString('en-PK')}`,
+      appliedFilters,
+      '',
+      'Invoice ID | Customer | Date | Amount',
+      ...filteredInvoices.map((invoice) =>
+        `${invoice.id} | ${invoice.customerName} | ${invoice.date} | ${money(invoice.amount)}`,
+      ),
+      '',
+      `Invoices: ${filteredInvoices.length}    Total: ${money(total)}`,
+    ];
+    const url = URL.createObjectURL(createPdf(lines));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sales-invoices_${timeframe.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto p-gutter space-y-4 animate-fade-in">
       
@@ -208,45 +335,56 @@ export default function ReportsPage() {
       <div className="flex items-center justify-between border-b border-outline-variant pb-3">
         <div>
           <h1 className="text-xl font-semibold text-foreground tracking-tight flex items-center gap-2">
-            <FileSpreadsheet className="size-5 text-primary" />
+            <FileSpreadsheet className="size-5 text-primary animate-pulse" />
             Reports Dashboard
           </h1>
           <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mt-0.5">
             Query, filter, and export business performance spreadsheets
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleExport}
-          className="inline-flex items-center gap-1.5 h-8.5 px-3.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/85 active:scale-[0.98] transition-all cursor-pointer shadow-xs"
-        >
-          <Download className="size-3.5" />
-          Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          {activeTab === 'sales' && (
+            <button
+              type="button"
+              onClick={handleDownloadSalesPdf}
+              className="inline-flex items-center gap-1.5 h-8.5 px-3.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/85 active:scale-[0.98] transition-all cursor-pointer shadow-xs"
+            >
+              <FileText className="size-3.5" />
+              Download Sales PDF
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleExport}
+            className="inline-flex items-center gap-1.5 h-8.5 px-3.5 rounded-lg border border-outline-variant bg-card text-foreground text-xs font-semibold hover:bg-muted active:scale-[0.98] transition-all cursor-pointer"
+          >
+            <Download className="size-3.5" />
+            Export CSV
+          </button>
+        </div>
       </div>
 
-      {/* Overview Stat Cards */}
+      {/* Dynamic Overview Stat Cards (updates based on timeframe) */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCard
-          label="Total Sales (MTD)"
-          value={money(totalSales)}
-          hint="All invoiced revenue"
+          label={`Sales Revenue (${timeframe === 'All' ? 'MTD' : timeframe})`}
+          value={money(salesInTimeframe)}
+          hint="Invoiced sale total"
           hintIcon={<TrendingUp className="size-3.5" />}
           tone="success"
         />
         <MetricCard
-          label="Outstanding Udhar"
-          value={money(totalOutstanding)}
-          hint={`${customers.filter((c) => c.balance > 0).length} active khatas`}
-          hintIcon={<AlertTriangle className="size-3.5" />}
-          tone="warning"
-        />
-        <MetricCard
-          label="Wasooli Recovered"
-          value={money(recoveredAmount)}
-          hint="Repayments logged"
+          label="Total Customers"
+          value={customers.length.toString()}
+          hint={`${customers.filter((c) => c.status === 'Active').length} active`}
           hintIcon={<CheckCircle2 className="size-3.5" />}
           tone="info"
+        />
+        <MetricCard
+          label={`Invoices (${timeframe === 'All' ? 'MTD' : timeframe})`}
+          value={invoicesInTimeframe.toString()}
+          hint="Sales recorded"
+          hintIcon={<TrendingUp className="size-3.5" />}
         />
         <MetricCard
           label="Low Stock Alerts"
@@ -257,46 +395,68 @@ export default function ReportsPage() {
         />
       </section>
 
-      {/* Tab Segment Controls */}
-      <div className="flex border border-outline-variant bg-surface-container-low rounded-xl p-1 w-full md:w-fit gap-1 shadow-2xs">
-        <button
-          type="button"
-          onClick={() => setActiveTab('sales')}
-          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
-            activeTab === 'sales'
-              ? 'bg-primary text-primary-foreground shadow-xs'
-              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-          }`}
-        >
-          <FileText className="size-4" />
-          Sales & Invoices
-        </button>
-        
-        <button
-          type="button"
-          onClick={() => setActiveTab('customers')}
-          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
-            activeTab === 'customers'
-              ? 'bg-primary text-primary-foreground shadow-xs'
-              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-          }`}
-        >
-          <Users className="size-4" />
-          Customer Khatas
-        </button>
-        
-        <button
-          type="button"
-          onClick={() => setActiveTab('products')}
-          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
-            activeTab === 'products'
-              ? 'bg-primary text-primary-foreground shadow-xs'
-              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-          }`}
-        >
-          <PackageSearch className="size-4" />
-          Product Performance
-        </button>
+      {/* Tab Segment Controls & Timeframe Selector Bar */}
+      <div className="flex flex-col md:flex-row gap-3 justify-between items-start md:items-center">
+        {/* Left: Tab selectors */}
+        <div className="flex border border-outline-variant bg-surface-container-low rounded-xl p-1 w-full md:w-fit gap-1 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('sales')}
+            className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'sales'
+                ? 'bg-primary text-primary-foreground shadow-xs'
+                : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+            }`}
+          >
+            <FileText className="size-4" />
+            Sales & Invoices
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setActiveTab('customers')}
+            className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'customers'
+                ? 'bg-primary text-primary-foreground shadow-xs'
+                : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+            }`}
+          >
+            <Users className="size-4" />
+            Customer Khatas
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setActiveTab('products')}
+            className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'products'
+                ? 'bg-primary text-primary-foreground shadow-xs'
+                : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+            }`}
+          >
+            <PackageSearch className="size-4" />
+            Product Performance
+          </button>
+        </div>
+
+        {/* Right: Global Timeframe selector */}
+        <div className="flex items-center gap-1 bg-card border border-outline-variant rounded-xl p-1 w-full md:w-fit shadow-2xs">
+          <span className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider px-2.5">Timeframe:</span>
+          {(['All', 'Daily', 'Weekly', 'Monthly'] as const).map((tf) => (
+            <button
+              key={tf}
+              type="button"
+              onClick={() => setTimeframe(tf)}
+              className={`flex-1 md:flex-initial py-1.5 px-3.5 rounded-lg text-xs font-semibold cursor-pointer transition-all ${
+                timeframe === tf
+                  ? 'bg-primary text-primary-foreground font-bold shadow-2xs'
+                  : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+              }`}
+            >
+              {tf === 'All' ? 'All Time' : tf}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Tabular Reports Workspace */}
@@ -337,31 +497,6 @@ export default function ReportsPage() {
                     className="w-full text-xs pl-8 pr-3 py-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground"
                   />
                 </div>
-                <div className="w-full sm:w-[180px]">
-                  <select
-                    value={salesPaymentType}
-                    onChange={(e) => setSalesPaymentType(e.target.value)}
-                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
-                  >
-                    <option value="All">All Payment Types</option>
-                    <option value="Cash">Cash Only</option>
-                    <option value="Udhar">Udhar (Credit) Only</option>
-                    <option value="Partial">Partial Only</option>
-                  </select>
-                </div>
-                <div className="w-full sm:w-[180px]">
-                  <select
-                    value={salesStatus}
-                    onChange={(e) => setSalesStatus(e.target.value)}
-                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
-                  >
-                    <option value="All">All Statuses</option>
-                    <option value="Paid">Paid</option>
-                    <option value="Unpaid">Unpaid</option>
-                    <option value="Partial">Partial</option>
-                    <option value="Overdue">Overdue</option>
-                  </select>
-                </div>
               </>
             )}
 
@@ -380,13 +515,13 @@ export default function ReportsPage() {
                 </div>
                 <div className="w-full sm:w-[180px]">
                   <select
-                    value={customerBalanceStatus}
-                    onChange={(e) => setCustomerBalanceStatus(e.target.value)}
+                    value={customerRecency}
+                    onChange={(e) => setCustomerRecency(e.target.value)}
                     className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
                   >
-                    <option value="All">All Balances</option>
-                    <option value="Has Balance">Has Outstanding Udhar</option>
-                    <option value="Clear">Clear Balance Only</option>
+                    <option value="All">All Customers</option>
+                    <option value="Active">Visited recently (&lt;14d)</option>
+                    <option value="Lapsed">Lapsed (14+ days)</option>
                   </select>
                 </div>
                 <div className="w-full sm:w-[180px]">
@@ -443,7 +578,6 @@ export default function ReportsPage() {
                   <Th>Invoice ID</Th>
                   <Th>Customer Name</Th>
                   <Th>Date Created</Th>
-                  <Th>Payment Type</Th>
                   <Th>Status</Th>
                   <Th className="text-right">Total Amount</Th>
                 </tr>
@@ -451,8 +585,8 @@ export default function ReportsPage() {
               <TBody>
                 {filteredInvoices.length === 0 ? (
                   <TRow>
-                    <Td colSpan={6} className="text-center text-muted-foreground italic py-8">
-                      No invoices found matching current filters.
+                    <Td colSpan={5} className="text-center text-muted-foreground italic py-8">
+                      No invoices found matching current filters or timeframe ({timeframe === 'All' ? 'All Time' : timeframe}).
                     </Td>
                   </TRow>
                 ) : (
@@ -466,14 +600,7 @@ export default function ReportsPage() {
                       <Td className="font-semibold text-foreground">{inv.customerName}</Td>
                       <Td className="font-mono text-xs text-muted-foreground">{inv.date}</Td>
                       <Td>
-                        <Badge tone={inv.paymentType === 'Cash' ? 'neutral' : inv.paymentType === 'Udhar' ? 'warning' : 'info'}>
-                          {inv.paymentType}
-                        </Badge>
-                      </Td>
-                      <Td>
-                        <Badge tone={inv.status === 'Paid' ? 'success' : inv.status === 'Overdue' ? 'danger' : 'warning'}>
-                          {inv.status}
-                        </Badge>
+                        <Badge tone="success">Paid</Badge>
                       </Td>
                       <Td className="text-right font-mono font-bold text-foreground">{money(inv.amount)}</Td>
                     </TRow>
@@ -491,52 +618,44 @@ export default function ReportsPage() {
                   <Th>Customer Name</Th>
                   <Th>Phone Number</Th>
                   <Th>Area / Neighborhood</Th>
-                  <Th>Credit Status</Th>
-                  <Th>Health Score</Th>
+                  <Th>Engagement</Th>
                   <Th>Account Status</Th>
-                  <Th className="text-right">Outstanding (Baqi)</Th>
-                  <Th className="text-right">Credit Limit</Th>
+                  <Th className="text-right">Lifetime Sales</Th>
+                  <Th className="text-right">Last Visit</Th>
                 </tr>
               </THead>
               <TBody>
                 {filteredCustomers.length === 0 ? (
                   <TRow>
-                    <Td colSpan={8} className="text-center text-muted-foreground italic py-8">
-                      No customers found matching current filters.
+                    <Td colSpan={7} className="text-center text-muted-foreground italic py-8">
+                      No customers found matching current filters or timeframe ({timeframe === 'All' ? 'All Time' : timeframe}).
                     </Td>
                   </TRow>
                 ) : (
                   filteredCustomers.map((cust) => {
-                    const healthTone = cust.healthScore >= 80 ? 'success' : cust.healthScore >= 50 ? 'warning' : 'danger';
+                    const lapsed = cust.lastVisitDays >= 14;
+                    const cooling = !lapsed && cust.lastVisitDays >= 7;
                     return (
                       <TRow key={cust.id} className="hover:bg-muted/30 transition-colors">
                         <Td>
-                          <Link href={`/ledger?customer=${cust.id}`} className="font-bold text-primary hover:underline">
+                          <Link href={`/customers/${cust.id}`} className="font-bold text-primary hover:underline">
                             {cust.name}
                           </Link>
                         </Td>
                         <Td className="font-mono text-xs text-muted-foreground">{cust.phone}</Td>
                         <Td className="text-foreground">{cust.neighborhood}</Td>
                         <Td>
-                          <Badge tone={cust.balance > 0 ? 'warning' : 'success'}>
-                            {cust.balance > 0 ? 'Owes Udhar' : 'Clear'}
+                          <Badge tone={lapsed ? 'danger' : cooling ? 'warning' : 'success'}>
+                            {lapsed ? 'Lapsed' : cooling ? 'Cooling' : 'Active'}
                           </Badge>
-                        </Td>
-                        <Td>
-                          <div className="flex items-center gap-1.5">
-                            <span className={`w-1.5 h-1.5 rounded-full ${healthTone === 'success' ? 'bg-success' : healthTone === 'warning' ? 'bg-warning' : 'bg-danger'}`} />
-                            <span className="font-bold text-xs">{cust.healthScore}%</span>
-                          </div>
                         </Td>
                         <Td>
                           <Badge tone={cust.status === 'Active' ? 'success' : 'neutral'}>
                             {cust.status}
                           </Badge>
                         </Td>
-                        <Td className={`text-right font-mono font-bold ${cust.balance > 0 ? 'text-warning-text' : 'text-foreground'}`}>
-                          {money(cust.balance)}
-                        </Td>
-                        <Td className="text-right font-mono text-muted-foreground">{money(cust.creditLimit)}</Td>
+                        <Td className="text-right font-mono font-bold text-foreground">{money(lifetimeOf(cust.id))}</Td>
+                        <Td className="text-right font-mono text-muted-foreground">{cust.lastVisitDays}d ago</Td>
                       </TRow>
                     );
                   })
@@ -566,18 +685,23 @@ export default function ReportsPage() {
                   </TRow>
                 ) : (
                   filteredProducts.map((p) => {
-                    const isLow = p.stock <= 8;
-                    const isCritical = p.stock <= 4;
+                    const tracked = p.stock !== null && p.reorder !== null;
+                    const isLow = tracked && p.stock! <= p.reorder!;
+                    const isCritical = tracked && p.stock! <= p.reorder! / 2;
                     return (
                       <TRow key={p.name} className="hover:bg-muted/30 transition-colors">
                         <Td className="font-semibold text-foreground">{p.name}</Td>
                         <Td className="text-right font-mono font-semibold">{p.units.toLocaleString()} units</Td>
                         <Td className="text-right font-mono font-bold text-success-text">{money(p.revenue)}</Td>
-                        <Td className="text-right font-mono font-bold">{p.stock}</Td>
+                        <Td className="text-right font-mono font-bold">{tracked ? p.stock : '—'}</Td>
                         <Td>
-                          <Badge tone={isCritical ? 'danger' : isLow ? 'warning' : 'success'}>
-                            {isCritical ? 'Critical Stock' : isLow ? 'Low Stock' : 'Healthy Stock'}
-                          </Badge>
+                          {tracked ? (
+                            <Badge tone={isCritical ? 'danger' : isLow ? 'warning' : 'success'}>
+                              {isCritical ? 'Critical Stock' : isLow ? 'Low Stock' : 'Healthy Stock'}
+                            </Badge>
+                          ) : (
+                            <Badge tone="neutral">Untracked</Badge>
+                          )}
                         </Td>
                       </TRow>
                     );
@@ -594,10 +718,10 @@ export default function ReportsPage() {
           <div>
             {activeTab === 'sales' && `Showing ${filteredInvoices.length} of ${invoices.length} invoices`}
             {activeTab === 'customers' && `Showing ${filteredCustomers.length} of ${customers.length} customer accounts`}
-            {activeTab === 'products' && `Showing ${filteredProducts.length} of ${PRODUCT_BASELINE.length} products`}
+            {activeTab === 'products' && `Showing ${filteredProducts.length} of ${productCatalog.length} products`}
           </div>
           <div>
-            Selected Tab: {activeTab.toUpperCase()}
+            Selected Tab: {activeTab.toUpperCase()} | Timeframe: {timeframe.toUpperCase()}
           </div>
         </div>
 

@@ -14,7 +14,6 @@ from .schemas import (
     AddCustomerIn,
     CreateInvoiceIn,
     QueryIn,
-    RecordPaymentIn,
     RecordSaleIn,
     WorkflowResult,
 )
@@ -47,59 +46,16 @@ def record_sale(inp: RecordSaleIn) -> WorkflowResult:
     store.invoices.append({
         "id": inv_id, "customerId": cust["id"], "customerName": cust["name"],
         "date": datetime(2026, 6, 25).strftime("%Y-%m-%d"),
-        "amount": inp.amount, "status": "Paid" if inp.payment_type == "Cash" else "Unpaid",
-        "paymentType": inp.payment_type,
+        "amount": inp.amount, "status": "Paid",
     })
-    if inp.payment_type == "Udhar":
-        cust["balance"] += inp.amount
-    elif inp.payment_type == "Partial":
-        paid = inp.amount_paid or 0
-        cust["balance"] += max(0, inp.amount - paid)
     cust["lastVisitDays"] = 0
 
-    msg = f"{cust['name']} ka {_pkr(inp.amount)} ({inp.payment_type}) likh diya."
-    if inp.payment_type != "Cash":
-        msg += f" Baqi ab {_pkr(cust['balance'])}."
+    msg = f"{cust['name']} ka {_pkr(inp.amount)} sale likh diya."
     return WorkflowResult(ok=True, workflow="record_sale", confirm=msg,
-                          data={"invoice_id": inv_id, "customer_id": cust["id"],
-                                "balance": cust["balance"]})
+                          data={"invoice_id": inv_id, "customer_id": cust["id"]})
 
 
-# ── W2 — Record Payment (Udhar recovery) ────────────────────────────────────
-def record_payment(inp: RecordPaymentIn) -> WorkflowResult:
-    cust = store.find_customer(inp.customer)
-    if cust is None:
-        return WorkflowResult(ok=False, workflow="record_payment",
-                              confirm=f"Customer '{inp.customer}' nahi mila.",
-                              error="customer_not_found")
-    if inp.amount <= 0:
-        return WorkflowResult(ok=False, workflow="record_payment",
-                              confirm="Amount 0 se zyada honi chahiye.", error="invalid_amount")
-    if cust["balance"] <= 0:
-        return WorkflowResult(ok=False, workflow="record_payment",
-                              confirm=f"{cust['name']} ka koi udhar baqi nahi hai.",
-                              error="no_balance")
-
-    warn = ""
-    applied = inp.amount
-    if inp.amount > cust["balance"]:
-        warn = f" (Note: {_pkr(inp.amount)} balance {_pkr(cust['balance'])} se zyada hai.)"
-
-    cust["balance"] = max(0, cust["balance"] - applied)
-    store.transactions.append({
-        "id": store.next_txn_id(), "customerId": cust["id"], "customerName": cust["name"],
-        "type": "Repayment", "amount": applied,
-        "date": datetime(2026, 6, 25).strftime("%Y-%m-%d"), "ref": "Cash Receipt",
-    })
-    cleared = cust["balance"] == 0
-    msg = f"{cust['name']} ka {_pkr(applied)} mil gaya. " + (
-        "Account clear!" if cleared else f"{_pkr(cust['balance'])} baqi.") + warn
-    return WorkflowResult(ok=True, workflow="record_payment", confirm=msg,
-                          data={"customer_id": cust["id"], "balance": cust["balance"],
-                                "cleared": cleared})
-
-
-# ── W3 — Add / Update Customer ──────────────────────────────────────────────
+# ── W2 — Add / Update Customer ──────────────────────────────────────────────
 def add_customer(inp: AddCustomerIn) -> WorkflowResult:
     dupes = [
         c for c in store.customers
@@ -117,8 +73,7 @@ def add_customer(inp: AddCustomerIn) -> WorkflowResult:
     cust = {
         "id": cid, "name": inp.name, "phone": inp.phone or "",
         "type": inp.type, "channel": "WhatsApp", "neighborhood": inp.area or "",
-        "creditLimit": 20000, "balance": 0, "status": "Active",
-        "healthScore": 70, "lastVisitDays": 0,
+        "status": "Active", "lastVisitDays": 0,
     }
     store.customers.append(cust)
     return WorkflowResult(ok=True, workflow="add_customer",
@@ -126,7 +81,7 @@ def add_customer(inp: AddCustomerIn) -> WorkflowResult:
                           data={"customer_id": cid})
 
 
-# ── W4 — Generate Invoice ───────────────────────────────────────────────────
+# ── W3 — Generate Invoice ───────────────────────────────────────────────────
 def create_invoice(inp: CreateInvoiceIn) -> WorkflowResult:
     cust = store.find_customer(inp.customer)
     if cust is None:
@@ -153,8 +108,9 @@ def create_invoice(inp: CreateInvoiceIn) -> WorkflowResult:
     store.invoices.append({
         "id": inv_id, "customerId": cust["id"], "customerName": cust["name"],
         "date": datetime(2026, 6, 25).strftime("%Y-%m-%d"),
-        "amount": total, "status": "Unpaid", "paymentType": "Udhar",
+        "amount": total, "status": "Paid",
     })
+    cust["lastVisitDays"] = 0
     phone = "".join(ch for ch in cust["phone"] if ch.isdigit())
     text = f"Salam {cust['name']}, aap ka bill {_pkr(total)} ({inv_id}) - PSO SME. Shukriya."
     wa_link = f"https://wa.me/{phone}?text={text.replace(' ', '%20')}" if phone else None
@@ -165,55 +121,44 @@ def create_invoice(inp: CreateInvoiceIn) -> WorkflowResult:
                                 "total": total, "whatsapp_link": wa_link})
 
 
-# ── W5 — Query Data (parameterised templates, no free-form SQL) ──────────────
+# ── W4 — Query Data (parameterised templates, no free-form SQL) ──────────────
+def _lifetime(cust_id: str) -> float:
+    return sum(i["amount"] for i in store.invoices if i["customerId"] == cust_id)
+
+
 def query_data(inp: QueryIn) -> WorkflowResult:
-    if inp.template == "udhar_recovered":
-        total, n = store.recovered_since(inp.days)
-        return WorkflowResult(ok=True, workflow="query_data",
-                              confirm=f"{_pkr(total)} recover hue, {n} customers se (pichle {inp.days} din).",
-                              data={"total": total, "customers": n, "days": inp.days})
-    if inp.template == "total_outstanding":
-        total = sum(c["balance"] for c in store.customers)
-        defaulters = sum(1 for c in store.customers if c["balance"] > 0)
-        return WorkflowResult(ok=True, workflow="query_data",
-                              confirm=f"Total outstanding udhar {_pkr(total)} hai, {defaulters} accounts par.",
-                              data={"total": total, "defaulters": defaulters})
     if inp.template == "sales_today":
         rows = [i for i in store.invoices if i["date"] == "2026-06-25"]
         total = sum(i["amount"] for i in rows)
         return WorkflowResult(ok=True, workflow="query_data",
                               confirm=f"Aaj ki sales {_pkr(total)} ({len(rows)} transactions).",
                               data={"total": total, "count": len(rows)})
-    if inp.template == "top_defaulters":
-        ranked = sorted([c for c in store.customers if c["balance"] > 0],
-                        key=lambda c: c["balance"], reverse=True)[:3]
-        names = ", ".join(f"{c['name']} ({_pkr(c['balance'])})" for c in ranked) or "koi nahi"
+    if inp.template == "top_by_sales":
+        ranked = sorted(store.customers, key=lambda c: _lifetime(c["id"]), reverse=True)
+        ranked = [c for c in ranked if _lifetime(c["id"]) > 0][:3]
+        names = ", ".join(f"{c['name']} ({_pkr(_lifetime(c['id']))})" for c in ranked) or "koi nahi"
         return WorkflowResult(ok=True, workflow="query_data",
-                              confirm=f"Sab se zyada udhar: {names}.",
-                              data={"top": [{"id": c["id"], "name": c["name"], "balance": c["balance"]} for c in ranked]})
+                              confirm=f"Sab se zyada business: {names}.",
+                              data={"top": [{"id": c["id"], "name": c["name"], "lifetime": _lifetime(c["id"])} for c in ranked]})
     return WorkflowResult(ok=False, workflow="query_data",
                           confirm="Yeh query samajh nahi aayi.", error="unknown_template")
 
 
-# ── W6 — Automated Alerts & Outreach triggers (rules engine) ────────────────
+# ── W5 — Automated Alerts & Outreach triggers (rules engine) ────────────────
 def compute_alerts() -> list[dict]:
     """Deterministic rules over current state. Surfaces in app badges/home and
     is also offered proactively in chat, each with a drafted outreach message."""
     alerts: list[dict] = []
     for c in store.customers:
-        bal, idle = c["balance"], c["lastVisitDays"]
-        if bal > c["creditLimit"]:
-            alerts.append(_alert("threshold_breach", "HIGH", c,
-                                 f"{c['name']} ka {_pkr(bal)} — limit {_pkr(c['creditLimit'])}",
-                                 f"Salam {c['name']}, aap ka udhar credit limit se barh gaya hai ({_pkr(bal)}). Baraye meherbani jald clear karein."))
-        elif bal > 0 and idle >= 7:
-            alerts.append(_alert("udhar_overdue", "HIGH", c,
-                                 f"{c['name']} ka {_pkr(bal)} — {idle} din",
-                                 f"Salam {c['name']}, aap ka {_pkr(bal)} udhar {idle} din se baqi hai. Shukriya."))
-        elif bal == 0 and idle >= 7:
-            alerts.append(_alert("inactive", "MEDIUM", c,
+        idle = c["lastVisitDays"]
+        if idle >= 14:
+            alerts.append(_alert("lapsed", "HIGH", c,
                                  f"{c['name']} {idle} din se nahi aaya",
-                                 f"Salam {c['name']}, kaafi din se mulaqat nahi hui. Aaj kuch khaas offers hain!"))
+                                 f"Salam {c['name']}, kaafi arsa ho gaya aap tashreef nahi laaye. Aap ke liye khaas offers hain — zaroor aaiye!"))
+        elif idle >= 7:
+            alerts.append(_alert("cooling", "MEDIUM", c,
+                                 f"{c['name']} {idle} din se nahi aaya",
+                                 f"Salam {c['name']}, umeed hai khairiyat se hain. Humare paas aaj kuch khaas offers hain — zaroor visit karein!"))
     return alerts
 
 

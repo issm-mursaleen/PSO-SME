@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/context/AppContext';
@@ -8,13 +8,9 @@ import { Icon } from '@/components/ui/Icon';
 
 export default function NotificationsList() {
   const router = useRouter();
-  const { notifications, recordPayment } = useApp();
+  const { notifications } = useApp();
 
   const [activeUrgencyFilter, setActiveUrgencyFilter] = useState<'All' | 'HIGH' | 'MEDIUM' | 'LOW'>('All');
-  
-  // Repayment modal inside notifications
-  const [activePaymentCustomer, setActivePaymentCustomer] = useState<{ id: string; name: string } | null>(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
 
   // Filtered list
   const filteredNotifications = useMemo(() => {
@@ -24,27 +20,6 @@ export default function NotificationsList() {
     });
   }, [notifications, activeUrgencyFilter]);
 
-  const handleOpenPayment = (customerName: string) => {
-    let customerId = '';
-    if (customerName.includes('Riaz')) customerId = 'cust-riaz';
-    else if (customerName.includes('Malik')) customerId = 'cust-malik';
-    else if (customerName.includes('Sana')) customerId = 'cust-sana';
-    else if (customerName.includes('Iqbal')) customerId = 'cust-iqbal';
-
-    if (customerId) {
-      setActivePaymentCustomer({ id: customerId, name: customerName });
-    }
-  };
-
-  const handleSavePayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (activePaymentCustomer && paymentAmount) {
-      recordPayment(activePaymentCustomer.id, parseFloat(paymentAmount));
-      setActivePaymentCustomer(null);
-      setPaymentAmount('');
-    }
-  };
-
   return (
     <div className="p-gutter space-y-6 max-w-[1200px] mx-auto w-full">
       
@@ -52,7 +27,7 @@ export default function NotificationsList() {
       <div>
         <h2 className="text-xl font-semibold text-foreground tracking-tight">Notifications Feed</h2>
         <p className="text-body-md text-on-surface-variant text-sm mt-1">
-          Stay informed of credit defaults, invoice dates, failed transfers, and inactivity metrics.
+          Stay informed of inactive customers, re-engagement opportunities, new sales, and stock alerts.
         </p>
       </div>
 
@@ -138,17 +113,6 @@ export default function NotificationsList() {
                       </Link>
                     );
                   }
-                  if (act.actionType === 'payment' || act.actionType === 'verify') {
-                    return (
-                      <button
-                        key={act.label}
-                        onClick={() => handleOpenPayment(item.customerName)}
-                        className="px-4 py-1.5 bg-primary text-on-primary font-bold text-xs rounded-lg hover:opacity-90 transition-all"
-                      >
-                        {act.label}
-                      </button>
-                    );
-                  }
                   if (act.actionType === 'remind') {
                     return (
                       <button
@@ -184,55 +148,6 @@ export default function NotificationsList() {
       >
         <Icon name="add" size={28} />
       </Link>
-
-      {/* Record Repayment Modal */}
-      {activePaymentCustomer && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-inverse-surface/60 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-2xl w-full max-w-112 overflow-hidden shadow-xl border border-outline-variant">
-            <form onSubmit={handleSavePayment} className="p-6 space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="font-headline-sm font-bold text-primary text-base">Record Repayment</h3>
-                <button
-                  type="button"
-                  onClick={() => setActivePaymentCustomer(null)}
-                  className="text-muted-foreground hover:bg-muted p-1 rounded-full transition-colors"
-                >
-                  <Icon name="close" size={18} />
-                </button>
-              </div>
-              <p className="text-xs text-on-surface-variant">
-                Post cash payment received from <strong>{activePaymentCustomer.name}</strong>.
-              </p>
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-on-surface-variant block">Amount Paid (PKR)</label>
-                <input
-                  type="number"
-                  required
-                  placeholder="e.g. 5000"
-                  className="w-full border border-outline-variant rounded-lg p-3 outline-none focus:ring-1 focus:ring-primary focus:border-primary text-sm font-numeric-data"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                />
-              </div>
-              <div className="flex gap-3 justify-end pt-4">
-                <button
-                  type="button"
-                  onClick={() => setActivePaymentCustomer(null)}
-                  className="px-4 py-2 border border-outline-variant text-on-surface-variant rounded-lg hover:bg-surface-container transition-all text-xs font-bold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2 bg-primary text-on-primary rounded-lg hover:opacity-90 active:scale-95 transition-all text-xs font-bold"
-                >
-                  Save Payment
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
     </div>
   );

@@ -7,6 +7,7 @@ load_dotenv()
 
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+OPENAI_TOTAL_BUDGET: float = float(os.getenv("OPENAI_TOTAL_BUDGET", "10.0").strip())
 
 CORS_ORIGINS: list[str] = [
     o.strip()

@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: 'PSO SME — Customer 360',
-  description: 'Customer 360 operations workspace — credit ledger, invoices, and portfolio intelligence.',
+  description: 'Customer 360 operations workspace — sales, invoices, customer management and outreach.',
 };
 
 export default function RootLayout({

@@ -8,7 +8,7 @@ import {
   Search, Send, Share2, Bot, Store, Table as TableIcon, TrendingUp, TrendingDown,
   BadgeCheck, Video, Flame, Sun, Moon, Bell, Settings, Calendar, LayoutDashboard,
   Users, HelpCircle, Wallet, PauseCircle, MessageCircle, Smartphone,
-  ShieldAlert, ChevronUp, Circle, type LucideIcon,
+  ShieldAlert, ChevronUp, Eye, Circle, type LucideIcon,
 } from 'lucide-react';
 
 /** Material Symbol name → lucide component. */
@@ -42,6 +42,8 @@ const MAP: Record<string, LucideIcon> = {
   hub: Network,
   image: ImageIcon,
   info: Info,
+  visibility: Eye,
+  eye: Eye,
   insights: LineChart,
   lightbulb: Lightbulb,
   lock_reset: KeyRound,

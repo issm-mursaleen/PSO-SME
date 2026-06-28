@@ -1,14 +1,14 @@
 'use client';
 
-import React, { useState, useMemo, Suspense } from 'react';
+import { useState, useMemo, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useApp, Customer } from '@/context/AppContext';
+import { useApp } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
 import { MetricCard } from '@/components/ui';
 
 function CustomersListContent() {
-  const { customers } = useApp();
+  const { customers, invoices } = useApp();
   const searchParams = useSearchParams();
   const urlSearch = searchParams.get('search') || '';
 
@@ -16,17 +16,39 @@ function CustomersListContent() {
   const [searchTerm, setSearchTerm] = useState(urlSearch);
   const [selectedArea, setSelectedArea] = useState('All Areas');
   const [selectedType, setSelectedType] = useState('All Types');
-  const [sortBy, setSortBy] = useState('balance-desc');
+  const [sortBy, setSortBy] = useState('sales-desc');
 
-  // Stats calculation
-  const totalCustomersBase = 2842;
-  const newCustomersCount = customers.filter(
-    (c) => c.id !== 'cust-riaz' && c.id !== 'cust-sana' && c.id !== 'cust-iqbal' && c.id !== 'cust-malik'
-  ).length;
+  // Lifetime sales per customer, computed from real invoices.
+  const lifetimeById = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const inv of invoices) {
+      map[inv.customerId] = (map[inv.customerId] ?? 0) + inv.amount;
+    }
+    return map;
+  }, [invoices]);
+  const lifetimeOf = (id: string) => lifetimeById[id] ?? 0;
 
-  const totalCustomers = totalCustomersBase + newCustomersCount;
-  const activeCreditsCount = customers.filter((c) => c.balance > 0).length + 408; // baseline offset
-  const overdueCount = customers.filter((c) => c.balance > 10000 && c.lastVisitDays > 10).length + 45;
+  // Stats — real counts from the live customer roster, no padding.
+  const totalCustomers = customers.length;
+  const activeCount = customers.filter((c) => c.status === 'Active').length;
+  const INACTIVE_DAYS = 10;
+  const needsOutreachCount = customers.filter((c) => c.lastVisitDays >= INACTIVE_DAYS).length;
+  const topSpenderValue = customers.reduce((max, c) => Math.max(max, lifetimeOf(c.id)), 0);
+
+  // Real data-derived insights: the highest-value customer who has gone quiet,
+  // and the most inactive customer overall.
+  const topValueAtRisk = useMemo(
+    () =>
+      customers
+        .filter((c) => c.lastVisitDays >= INACTIVE_DAYS && lifetimeOf(c.id) > 0)
+        .sort((a, b) => lifetimeOf(b.id) - lifetimeOf(a.id))[0] ?? null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customers, lifetimeById],
+  );
+  const topInactiveCustomer = useMemo(
+    () => customers.slice().sort((a, b) => b.lastVisitDays - a.lastVisitDays)[0] ?? null,
+    [customers],
+  );
 
   // Filtered customer list
   const filteredCustomers = useMemo(() => {
@@ -36,7 +58,7 @@ function CustomersListContent() {
           c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
           c.phone.includes(searchTerm) ||
           c.neighborhood.toLowerCase().includes(searchTerm.toLowerCase());
-        
+
         const matchesArea =
           selectedArea === 'All Areas' ||
           c.neighborhood.toLowerCase().includes(selectedArea.toLowerCase());
@@ -48,18 +70,19 @@ function CustomersListContent() {
         return matchesSearch && matchesArea && matchesType;
       })
       .sort((a, b) => {
-        if (sortBy === 'balance-desc') {
-          return b.balance - a.balance;
-        } else if (sortBy === 'balance-asc') {
-          return a.balance - b.balance;
+        if (sortBy === 'sales-desc') {
+          return lifetimeOf(b.id) - lifetimeOf(a.id);
+        } else if (sortBy === 'sales-asc') {
+          return lifetimeOf(a.id) - lifetimeOf(b.id);
         } else if (sortBy === 'name-asc') {
           return a.name.localeCompare(b.name);
-        } else if (sortBy === 'health-asc') {
-          return a.healthScore - b.healthScore;
+        } else if (sortBy === 'recency-desc') {
+          return b.lastVisitDays - a.lastVisitDays;
         }
         return 0;
       });
-  }, [customers, searchTerm, selectedArea, selectedType, sortBy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customers, searchTerm, selectedArea, selectedType, sortBy, lifetimeById]);
 
   return (
     <div className="p-gutter space-y-6 max-w-[1600px] mx-auto w-full">
@@ -68,7 +91,7 @@ function CustomersListContent() {
         <div>
           <h1 className="text-xl font-semibold text-foreground tracking-tight">Customers</h1>
           <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mt-1">
-            {totalCustomers.toLocaleString()} verified accounts &amp; credit ledgers
+            {totalCustomers.toLocaleString()} customer profiles
           </p>
         </div>
         <Link
@@ -82,10 +105,10 @@ function CustomersListContent() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard label="Total Customers" value={totalCustomers.toLocaleString()} hint="Active business accounts" />
-        <MetricCard label="Active Credits" value={activeCreditsCount} hint="Accounts with debit balance" />
-        <MetricCard label="Overdue Ledgers" value={overdueCount} hint="Require immediate outreach" tone="warning" />
-        <MetricCard label="Defaulters Risk" value="1.4%" hint="Within safe threshold (< 3.0%)" tone="danger" />
+        <MetricCard label="Total Customers" value={totalCustomers.toLocaleString()} hint="Customer profiles" />
+        <MetricCard label="Active" value={activeCount} hint="Active status accounts" />
+        <MetricCard label="Needs Outreach" value={needsOutreachCount} hint={`No visit in ${INACTIVE_DAYS}+ days`} tone="warning" />
+        <MetricCard label="Top Spender" value={`PKR ${topSpenderValue.toLocaleString()}`} hint="Highest lifetime sales" tone="success" />
       </div>
 
       {/* Filters Bar */}
@@ -134,10 +157,10 @@ function CustomersListContent() {
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
           >
-            <option value="balance-desc">Balance: High to Low</option>
-            <option value="balance-asc">Balance: Low to High</option>
+            <option value="sales-desc">Lifetime Sales: High to Low</option>
+            <option value="sales-asc">Lifetime Sales: Low to High</option>
             <option value="name-asc">Name: A to Z</option>
-            <option value="health-asc">Risk: High to Low</option>
+            <option value="recency-desc">Least Recent Visit</option>
           </select>
         </div>
       </div>
@@ -151,23 +174,22 @@ function CustomersListContent() {
                 <th className="px-md py-sm">Customer Profile</th>
                 <th className="px-md py-sm">Area &amp; Neighborhood</th>
                 <th className="px-md py-sm">Category</th>
-                <th className="px-md py-sm">Credit Limit</th>
-                <th className="px-md py-sm">Outstanding Balance</th>
-                <th className="px-md py-sm">Credit Health</th>
+                <th className="px-md py-sm">Lifetime Sales</th>
+                <th className="px-md py-sm">Last Visit</th>
                 <th className="px-md py-sm text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-outline-variant text-body-md">
               {filteredCustomers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-md py-8 text-center text-on-surface-variant italic">
+                  <td colSpan={6} className="px-md py-8 text-center text-on-surface-variant italic">
                     No customers found matching the search/filter criteria.
                   </td>
                 </tr>
               ) : (
                 filteredCustomers.map((customer) => {
-                  const hasDeficit = customer.balance > 0;
-                  const percentOfLimit = Math.round((customer.balance / customer.creditLimit) * 100);
+                  const lifetime = lifetimeOf(customer.id);
+                  const isInactive = customer.lastVisitDays >= INACTIVE_DAYS;
 
                   return (
                     <tr key={customer.id} className="hover:bg-surface-container transition-colors group">
@@ -191,46 +213,17 @@ function CustomersListContent() {
                         </span>
                       </td>
 
-                      {/* Credit Limit */}
-                      <td className="px-md py-md font-numeric-data">PKR {customer.creditLimit.toLocaleString()}</td>
+                      {/* Lifetime Sales */}
+                      <td className="px-md py-md font-numeric-data font-bold text-primary">PKR {lifetime.toLocaleString()}</td>
 
-                      {/* Outstanding Balance */}
-                      <td className={`px-md py-md font-numeric-data font-bold ${hasDeficit ? 'text-tertiary' : 'text-primary'}`}>
-                        PKR {customer.balance.toLocaleString()}
-                        {hasDeficit && (
+                      {/* Last Visit */}
+                      <td className={`px-md py-md font-numeric-data font-bold ${isInactive ? 'text-tertiary' : 'text-on-surface-variant'}`}>
+                        {customer.lastVisitDays}d ago
+                        {isInactive && (
                           <span className="block text-[10px] text-outline font-medium font-sans">
-                            {percentOfLimit}% of limit
+                            needs outreach
                           </span>
                         )}
-                      </td>
-
-                      {/* Credit Health */}
-                      <td className="px-md py-md">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-1.5 bg-surface-container rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${
-                                customer.healthScore > 80
-                                  ? 'bg-primary'
-                                  : customer.healthScore > 60
-                                  ? 'bg-secondary'
-                                  : 'bg-error'
-                              }`}
-                              style={{ width: `${customer.healthScore}%` }}
-                            ></div>
-                          </div>
-                          <span
-                            className={`text-xs font-bold ${
-                              customer.healthScore > 80
-                                ? 'text-primary'
-                                : customer.healthScore > 60
-                                ? 'text-secondary'
-                                : 'text-error'
-                            }`}
-                          >
-                            {customer.healthScore}%
-                          </span>
-                        </div>
                       </td>
 
                       {/* Actions */}
@@ -247,7 +240,7 @@ function CustomersListContent() {
                             href={`/customers/${customer.id}`}
                             className="px-3 py-1.5 border border-primary text-primary font-label-md rounded-lg hover:bg-primary-container hover:text-on-primary-container transition-all text-xs font-bold"
                           >
-                            View Ledger
+                            View Profile
                           </Link>
                         </div>
                       </td>
@@ -273,40 +266,57 @@ function CustomersListContent() {
         </div>
       </div>
 
-      {/* Contextual Insights Section */}
+      {/* Contextual Insights Section — derived live from the customer roster */}
       <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5 shadow-sm space-y-4">
-        <h4 className="font-headline-sm text-label-md text-primary uppercase tracking-wider font-bold text-xs">Ledger Insights &amp; Alerts</h4>
+        <h4 className="font-headline-sm text-label-md text-primary uppercase tracking-wider font-bold text-xs">Customer Insights &amp; Outreach</h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Link
-            href="/customers/cust-riaz?tab=recommendations"
-            className="group flex gap-3 items-start p-3 bg-error-container/20 border border-error/20 rounded-lg hover:bg-error-container/30 hover:border-error/40 transition-all"
-          >
-            <Icon name="warning" className="text-error" size={18} />
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-on-error-container flex items-center gap-1">
-                Defaulter Risk Alert
-                <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
-              </p>
-              <p className="text-xs text-on-surface-variant mt-0.5">
-                Clifton area outstanding balance has grown by 14% this week. Riaz Ahmed exceeds safe limit.
-              </p>
+          {topValueAtRisk ? (
+            <Link
+              href={`/customers/${topValueAtRisk.id}`}
+              className="group flex gap-3 items-start p-3 bg-error-container/20 border border-error/20 rounded-lg hover:bg-error-container/30 hover:border-error/40 transition-all"
+            >
+              <Icon name="warning" className="text-error" size={18} />
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-on-error-container flex items-center gap-1">
+                  Valuable Customer Going Quiet
+                  <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                </p>
+                <p className="text-xs text-on-surface-variant mt-0.5">
+                  {topValueAtRisk.name} ({topValueAtRisk.neighborhood}) — PKR{' '}
+                  {lifetimeOf(topValueAtRisk.id).toLocaleString()} lifetime sales but no visit in{' '}
+                  {topValueAtRisk.lastVisitDays} days. Re-engage soon.
+                </p>
+              </div>
+            </Link>
+          ) : (
+            <div className="flex gap-3 items-start p-3 bg-surface-container/40 border border-outline-variant rounded-lg">
+              <Icon name="check_circle" className="text-on-surface-variant" size={18} />
+              <p className="text-xs text-on-surface-variant mt-0.5">All high-value customers have visited recently.</p>
             </div>
-          </Link>
-          <Link
-            href="/customers/cust-sana?tab=recommendations"
-            className="group flex gap-3 items-start p-3 bg-primary-container/20 border border-primary/20 rounded-lg hover:bg-primary-container/30 hover:border-primary/40 transition-all"
-          >
-            <Icon name="lightbulb" className="text-primary" size={18} />
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-on-primary-container flex items-center gap-1">
-                Outreach Recommendation
-                <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
-              </p>
-              <p className="text-xs text-on-surface-variant mt-0.5">
-                Sana Bibi has not purchased in 9 days. Usually visits every 4 days. Send her an active WhatsApp offer.
-              </p>
+          )}
+          {topInactiveCustomer ? (
+            <Link
+              href={`/customers/${topInactiveCustomer.id}`}
+              className="group flex gap-3 items-start p-3 bg-primary-container/20 border border-primary/20 rounded-lg hover:bg-primary-container/30 hover:border-primary/40 transition-all"
+            >
+              <Icon name="lightbulb" className="text-primary" size={18} />
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-on-primary-container flex items-center gap-1">
+                  Outreach Recommendation
+                  <Icon name="chevron_right" size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                </p>
+                <p className="text-xs text-on-surface-variant mt-0.5">
+                  {topInactiveCustomer.name} hasn&apos;t visited in {topInactiveCustomer.lastVisitDays} days — send a
+                  friendly check-in or offer.
+                </p>
+              </div>
+            </Link>
+          ) : (
+            <div className="flex gap-3 items-start p-3 bg-surface-container/40 border border-outline-variant rounded-lg">
+              <Icon name="check_circle" className="text-on-surface-variant" size={18} />
+              <p className="text-xs text-on-surface-variant mt-0.5">No customers need outreach right now.</p>
             </div>
-          </Link>
+          )}
         </div>
       </section>
     </div>

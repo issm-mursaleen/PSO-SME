@@ -12,14 +12,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
-from . import config, llm, store, workflows
+from . import config, llm, store, usage, workflows
 from .schemas import (
     AddCustomerIn,
     ChatIn,
     ChatOut,
     CreateInvoiceIn,
+    PlanIn,
+    PlanOut,
     QueryIn,
-    RecordPaymentIn,
     RecordSaleIn,
     WorkflowResult,
 )
@@ -56,15 +57,10 @@ def alerts() -> list[dict]:
     return workflows.compute_alerts()
 
 
-# ── Shared deterministic workflows (W1-W5) — same code the chat calls ────────
+# ── Shared deterministic workflows (W1-W4) — same code the chat calls ────────
 @app.post("/api/workflows/record-sale", response_model=WorkflowResult)
 def w_record_sale(inp: RecordSaleIn) -> WorkflowResult:
     return workflows.record_sale(inp)
-
-
-@app.post("/api/workflows/record-payment", response_model=WorkflowResult)
-def w_record_payment(inp: RecordPaymentIn) -> WorkflowResult:
-    return workflows.record_payment(inp)
 
 
 @app.post("/api/workflows/add-customer", response_model=WorkflowResult)
@@ -88,6 +84,18 @@ def chat(inp: ChatIn) -> ChatOut:
     # Resolve names against the frontend's live roster (source of truth).
     store.sync_customers([c.model_dump() for c in inp.context.customers])
     return llm.handle_chat(inp)
+
+
+# ── Agentic planner (stateless) — picks tools, frontend executes them ─────────
+@app.post("/api/plan", response_model=PlanOut)
+def plan(inp: PlanIn) -> PlanOut:
+    return llm.plan(inp)
+
+
+# ── OpenAI credits used by the chat (daily / weekly / monthly) ────────────────
+@app.get("/api/usage")
+def usage_summary() -> dict:
+    return usage.summary()
 
 
 @app.post("/api/transcribe")

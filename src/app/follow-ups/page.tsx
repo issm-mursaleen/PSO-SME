@@ -2,28 +2,28 @@
 
 import React, { useMemo } from 'react';
 import Link from 'next/link';
-import { BellRing, CalendarCheck, MapPin, Truck, WalletCards } from 'lucide-react';
+import { BellRing, CalendarCheck, MapPin, Truck, Sparkles } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
 
 const reminderTemplates = [
   {
     title: 'Send WhatsApp',
-    description: 'Send a written follow-up for overdue, inactive, or high-value customers.',
+    description: 'Send a friendly check-in to recent or active customers.',
     icon: BellRing,
     tone: 'info' as const,
     action: 'Open messages',
   },
   {
-    title: 'Collect payment',
-    description: 'Reminder to collect cash, transfer, or settle udhar balance.',
-    icon: WalletCards,
+    title: 'Re-engage (offer)',
+    description: 'Win back inactive customers with a fresh offer or new arrival.',
+    icon: Sparkles,
     tone: 'warning' as const,
-    action: 'Record payment',
+    action: 'Send offer',
   },
   {
     title: 'Visit customer',
-    description: 'Schedule a market or shop visit for relationship recovery.',
+    description: 'Schedule a market or shop visit to strengthen the relationship.',
     icon: MapPin,
     tone: 'success' as const,
     action: 'Plan visit',
@@ -45,9 +45,9 @@ export default function FollowUpsPage() {
       customers.map((customer) => {
         const queueItem = connectQueue.find((item) => item.customerId === customer.id);
         const kind =
-          customer.balance > 0
-            ? 'Collect payment'
-            : customer.lastVisitDays > 7
+          customer.lastVisitDays >= 14
+            ? 'Re-engage (offer)'
+            : customer.lastVisitDays >= 7
             ? 'Visit customer'
             : customer.channel === 'WhatsApp'
             ? 'Send WhatsApp'
@@ -58,16 +58,25 @@ export default function FollowUpsPage() {
           customer: customer.name,
           phone: customer.phone,
           kind,
-          reason: queueItem?.reason ?? (customer.balance > 0 ? 'Open balance' : 'Regular service reminder'),
-          balance: customer.balance,
+          reason:
+            queueItem?.reason ??
+            (customer.lastVisitDays >= 14
+              ? `No visit in ${customer.lastVisitDays} days`
+              : 'Regular service reminder'),
+          lastVisitDays: customer.lastVisitDays,
           due: customer.lastVisitDays > 10 ? 'Today' : customer.lastVisitDays > 5 ? 'Tomorrow' : 'This week',
-          tone: customer.balance > 0 ? ('warning' as const) : customer.lastVisitDays > 7 ? ('info' as const) : ('neutral' as const),
+          tone:
+            customer.lastVisitDays >= 14
+              ? ('warning' as const)
+              : customer.lastVisitDays >= 7
+              ? ('info' as const)
+              : ('neutral' as const),
         };
       }),
     [customers, connectQueue],
   );
 
-  const paymentTasks = followUps.filter((item) => item.kind === 'Collect payment').length;
+  const reengageTasks = followUps.filter((item) => item.kind === 'Re-engage (offer)').length;
   const visitTasks = followUps.filter((item) => item.kind === 'Visit customer').length;
   const messageTasks = followUps.filter((item) => item.kind === 'Send WhatsApp').length;
 
@@ -92,7 +101,7 @@ export default function FollowUpsPage() {
       <section className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         <MetricCard label="Total Reminders" value={followUps.length} hint="Active customer tasks" />
         <MetricCard label="Send WhatsApp" value={messageTasks} hint="Message follow-ups" tone="info" />
-        <MetricCard label="Collect Payment" value={paymentTasks} hint="Udhar recovery tasks" tone="warning" />
+        <MetricCard label="Needs Re-engagement" value={reengageTasks} hint="Inactive 14+ days" tone="warning" />
         <MetricCard label="Visit Customer" value={visitTasks} hint="Relationship visits" tone="success" />
       </section>
 
@@ -129,7 +138,7 @@ export default function FollowUpsPage() {
                 <Th>Customer</Th>
                 <Th>Reminder</Th>
                 <Th>Reason</Th>
-                <Th className="text-right">Balance</Th>
+                <Th className="text-right">Last Visit</Th>
                 <Th>Due</Th>
                 <Th className="text-right">Action</Th>
               </tr>
@@ -145,9 +154,7 @@ export default function FollowUpsPage() {
                     <Badge tone={item.tone}>{item.kind}</Badge>
                   </Td>
                   <Td className="text-muted-foreground">{item.reason}</Td>
-                  <Td className="text-right font-mono font-semibold">
-                    {item.balance > 0 ? `PKR ${item.balance.toLocaleString()}` : '-'}
-                  </Td>
+                  <Td className="text-right font-mono font-semibold">{item.lastVisitDays}d ago</Td>
                   <Td className="font-mono text-xs">{item.due}</Td>
                   <Td className="text-right">
                     <Link

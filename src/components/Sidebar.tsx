@@ -1,8 +1,10 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import psoLogo from '@/assets/pso-logo.jpg';
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -11,7 +13,6 @@ import {
   LineChart,
   Package,
   Users,
-  BookOpen,
   ClipboardList,
   Network,
   Bot,
@@ -36,16 +37,15 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
       { name: 'Today Dashboard', icon: LayoutDashboard, href: '/' },
       { name: 'Record Sale', icon: ShoppingCart, href: '/record-sale' },
       { name: 'Invoices List', icon: ReceiptText, href: '/invoices' },
-      { name: 'Basic Inventory', icon: Package, href: '/inventory' },
+      { name: 'Inventory & Suppliers', icon: Package, href: '/inventory' },
       { name: 'Analytics Insights', icon: LineChart, href: '/insights' },
       { name: 'Reports', icon: FileBarChart, href: '/reports' },
     ],
   },
   {
-    title: 'Credit Control',
+    title: 'Customers & Outreach',
     items: [
       { name: 'Customers Directory', icon: Users, href: '/customers' },
-      { name: 'Udhar Ledger', icon: BookOpen, href: '/ledger' },
       { name: 'Customer Follow-ups', icon: ClipboardList, href: '/follow-ups' },
       { name: 'Customer Connect', icon: Network, href: '/connect' },
     ],
@@ -98,7 +98,8 @@ export const Sidebar: React.FC = () => {
   return (
     <aside className="fixed left-0 top-0 z-50 h-screen w-[208px] flex flex-col bg-card border-r border-outline-variant overflow-hidden">
       {/* Brand */}
-      <div className="px-4 pt-5 pb-3 flex flex-col items-center text-center gap-0.5 border-b border-outline-variant shrink-0">
+      <div className="px-4 pt-5 pb-3 flex flex-col items-center text-center gap-1 border-b border-outline-variant shrink-0">
+        <Image src={psoLogo} alt="PSO" className="size-10 object-contain" priority />
         <p className="text-foreground text-[13px] font-extrabold font-mono tracking-[0.18em] uppercase leading-tight">
           PSO SME
         </p>

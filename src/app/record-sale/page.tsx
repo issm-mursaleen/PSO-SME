@@ -37,7 +37,6 @@ export default function RecordSale() {
   const { customers, recordSale, sendWhatsAppReminder } = useApp();
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('walk-in');
-  const [paymentType, setPaymentType] = useState<'Cash' | 'Udhar' | 'Partial'>('Cash');
   const [notes, setNotes] = useState('');
   
   // Sale Items Rows State
@@ -47,7 +46,6 @@ export default function RecordSale() {
     { id: '3', name: 'Cooking Oil 1L', quantity: 5, unit: 'kg', price: 155, discount: 25 },
   ]);
 
-  const [amountReceivedInput, setAmountReceivedInput] = useState<string>('1550');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [createdInvoiceId, setCreatedInvoiceId] = useState('');
   
@@ -99,22 +97,6 @@ export default function RecordSale() {
   const subtotal = rows.reduce((sum, r) => sum + (r.quantity * r.price), 0);
   const totalDiscount = rows.reduce((sum, r) => sum + r.discount, 0);
   const grandTotal = Math.max(0, subtotal - totalDiscount);
-
-  // Sync Amount Received on Payment Type changes
-  useEffect(() => {
-    if (paymentType === 'Cash') {
-      setAmountReceivedInput(grandTotal.toString());
-    } else if (paymentType === 'Udhar') {
-      setAmountReceivedInput('0');
-    }
-  }, [paymentType, grandTotal]);
-
-  const amountReceived = parseFloat(amountReceivedInput) || 0;
-  const changeDue = paymentType === 'Cash' ? Math.max(0, amountReceived - grandTotal) : 0;
-  
-  // Calculate new balance
-  const unpaidAmount = paymentType === 'Cash' ? 0 : Math.max(0, grandTotal - amountReceived);
-  const newBalance = activeCustomer ? activeCustomer.balance + unpaidAmount : 0;
 
   // Trigger toast alert helper
   const triggerToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
@@ -185,7 +167,7 @@ export default function RecordSale() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedCustomerId, paymentType, rows, totalDiscount, notes, amountReceivedInput, isSaving]);
+  }, [selectedCustomerId, rows, totalDiscount, notes, isSaving]);
 
   // Form Validation and Saving trigger
   const handleSaveSale = () => {
@@ -204,7 +186,7 @@ export default function RecordSale() {
     }
 
     setIsSaving(true);
-    triggerToast('Recording sale and updating ledgers...', 'info');
+    triggerToast('Recording sale...', 'info');
 
     setTimeout(() => {
       // Convert rows to InvoiceItem format
@@ -218,11 +200,9 @@ export default function RecordSale() {
 
       const savedInvoice = recordSale(
         selectedCustomerId,
-        paymentType,
         invoiceItems,
         totalDiscount,
-        notes,
-        amountReceived
+        notes
       );
 
       setCreatedInvoiceId(savedInvoice.id);
@@ -239,8 +219,6 @@ export default function RecordSale() {
       { id: '3', name: 'Cooking Oil 1L', quantity: 5, unit: 'kg', price: 155, discount: 25 },
     ]);
     setNotes('');
-    setPaymentType('Cash');
-    setAmountReceivedInput('1550');
     setSelectedCustomerId('walk-in');
     setShowSuccessModal(false);
     setHasPrinted(false);
@@ -253,7 +231,6 @@ export default function RecordSale() {
     const date = new Date().toLocaleString('en-GB');
     const pkr = (n: number) => `Rs ${n.toLocaleString()}`;
     const subtotal = rows.reduce((s, r) => s + r.quantity * r.price, 0);
-    const dueDate = new Date(Date.now() + 7 * 86400000).toLocaleDateString('en-GB');
 
     const itemRows = rows
       .map(
@@ -263,21 +240,7 @@ export default function RecordSale() {
       )
       .join('');
 
-    let payLines = '';
-    if (paymentType === 'Cash') {
-      payLines =
-        `<div class="row"><span>Received</span><span>${pkr(amountReceived)}</span></div>` +
-        `<div class="row"><span>Change</span><span>${pkr(changeDue)}</span></div>`;
-    } else if (paymentType === 'Udhar') {
-      payLines =
-        `<div class="row b"><span>UDHAR DUE</span><span>${pkr(unpaidAmount)}</span></div>` +
-        `<div class="row"><span>Due in</span><span>7 days (${dueDate})</span></div>`;
-    } else {
-      payLines =
-        `<div class="row"><span>Paid</span><span>${pkr(amountReceived)}</span></div>` +
-        `<div class="row b"><span>UDHAR DUE</span><span>${pkr(unpaidAmount)}</span></div>` +
-        `<div class="row"><span>Due in</span><span>7 days (${dueDate})</span></div>`;
-    }
+    const payLines = `<div class="row b"><span>PAID</span><span>${pkr(grandTotal)}</span></div>`;
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Receipt ${createdInvoiceId}</title>
 <style>
@@ -307,7 +270,6 @@ export default function RecordSale() {
   <div class="row"><span>Subtotal</span><span>${pkr(subtotal)}</span></div>
   ${totalDiscount > 0 ? `<div class="row"><span>Discount</span><span>- ${pkr(totalDiscount)}</span></div>` : ''}
   <div class="row b" style="font-size:13px"><span>TOTAL</span><span>${pkr(grandTotal)}</span></div>
-  <div class="row"><span>Payment</span><span>${paymentType}</span></div>
   ${payLines}
   ${notes.trim() ? `<hr/><div class="small">Note: ${notes}</div>` : ''}
   <hr/>
@@ -345,21 +307,10 @@ export default function RecordSale() {
   // receipt pre-filled in the composer, so they can send it to him directly.
   const handleShareWhatsApp = () => {
     const name = activeCustomer ? activeCustomer.name : 'Customer';
-    const dueDays = 7; // credit term — matches the invoice dueDate (date + 7 days)
-    const dueDate = new Date(Date.now() + dueDays * 86400000).toLocaleDateString('en-GB');
     const pkr = (n: number) => `PKR ${n.toLocaleString()}`;
     const noteStr = notes.trim() ? ` Note: ${notes}.` : '';
 
-    const base = `Salam ${name}, PSO SME se aap ki kharidari. Invoice ${createdInvoiceId} — ${pkr(grandTotal)} ka saman bika.`;
-    let summaryMsg: string;
-    if (paymentType === 'Cash') {
-      summaryMsg = `${base} Cash payment ${pkr(grandTotal)} mukammal mil gayi.${noteStr} Shukriya!`;
-    } else if (paymentType === 'Udhar') {
-      summaryMsg = `${base} Yeh udhar (credit) par hai — ${pkr(unpaidAmount)} baqi hai, jo ${dueDays} din mein (due ${dueDate}) clear karna hai.${noteStr} Shukriya!`;
-    } else {
-      // Partial
-      summaryMsg = `${base} ${pkr(amountReceived)} mil gaye, baqi ${pkr(unpaidAmount)} udhar par hai — ${dueDays} din mein (due ${dueDate}) clear karna hai.${noteStr} Shukriya!`;
-    }
+    const summaryMsg = `Salam ${name}, PSO SME se aap ki kharidari. Invoice ${createdInvoiceId} — ${pkr(grandTotal)} ka saman. Payment mukammal mil gayi.${noteStr} Shukriya!`;
 
     if (selectedCustomerId !== 'walk-in') {
       // Log the receipt into the customer's WhatsApp chat, then open their
@@ -426,7 +377,7 @@ export default function RecordSale() {
           
           {/* Customer & Payment Header */}
           <section className="bg-surface-container-lowest rounded-xl border border-outline-variant p-5 operational-shadow">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               {/* Customer selection */}
               <div className="space-y-1">
@@ -445,33 +396,6 @@ export default function RecordSale() {
                       </option>
                     ))}
                   </select>
-                </div>
-              </div>
-
-              {/* Payment Type Toggle */}
-              <div className="space-y-1">
-                <label className="font-body-sm font-bold text-on-surface-variant block">Payment Type</label>
-                <div className="flex bg-surface-container p-1 rounded-lg border border-outline-variant/30">
-                  {(['Cash', 'Udhar', 'Partial'] as const).map((type) => {
-                    const isSelected = paymentType === type;
-                    return (
-                      <button
-                        key={type}
-                        type="button"
-                        onClick={() => {
-                          setPaymentType(type);
-                          triggerToast(`Payment type set to ${type}`, 'info');
-                        }}
-                        className={`flex-1 py-1.5 rounded-md font-label-md transition-all text-xs font-bold active:scale-95 ${
-                          isSelected
-                            ? 'bg-primary text-white shadow-sm'
-                            : 'text-on-surface-variant hover:bg-surface-container-high'
-                        }`}
-                      >
-                        {type}
-                      </button>
-                    );
-                  })}
                 </div>
               </div>
 
@@ -705,22 +629,16 @@ export default function RecordSale() {
             
             <div className="grid grid-cols-2 gap-4 border-t border-outline-variant pt-4">
               <div>
-                <p className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold">Ledger Balance</p>
+                <p className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold">Last Visit</p>
                 <p className="font-numeric-data text-sm font-extrabold font-mono-numbers mt-0.5 text-primary">
-                  PKR {activeCustomer?.balance.toLocaleString() || '0.00'}
+                  {activeCustomer ? `${activeCustomer.lastVisitDays} days ago` : '—'}
                 </p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold mb-1">Status</p>
-                {activeCustomer ? (
-                  activeCustomer.balance > 0 ? (
-                    <span className="bg-error-container text-on-error-container px-2 py-0.5 rounded text-[9px] font-bold uppercase">Owes PKR {activeCustomer.balance.toLocaleString()}</span>
-                  ) : (
-                    <span className="bg-primary-fixed text-on-primary-fixed-variant px-2 py-0.5 rounded text-[9px] font-bold uppercase">Settled</span>
-                  )
-                ) : (
-                  <span className="bg-primary-fixed text-on-primary-fixed-variant px-2 py-0.5 rounded text-[9px] font-bold uppercase">Settled</span>
-                )}
+                <span className="bg-primary-fixed text-on-primary-fixed-variant px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                  {activeCustomer ? activeCustomer.status : 'Walk-in'}
+                </span>
               </div>
             </div>
           </div>
@@ -747,33 +665,6 @@ export default function RecordSale() {
               </div>
             </div>
             
-            <div className="mt-8 space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-primary-fixed-dim uppercase tracking-wider block">Amount Received Cash</label>
-                <div className="relative text-black">
-                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-primary text-xs font-bold font-mono">PKR</span>
-                  <input
-                    className="w-full bg-white text-on-surface border-none rounded-lg pl-12 pr-4 py-3 font-numeric-data text-headline-sm outline-none focus:ring-2 focus:ring-primary-fixed font-bold text-lg font-mono-numbers"
-                    type="text"
-                    disabled={paymentType === 'Cash' || paymentType === 'Udhar'}
-                    value={amountReceivedInput}
-                    onChange={(e) => setAmountReceivedInput(e.target.value)}
-                  />
-                </div>
-              </div>
-              
-              <div className="flex justify-between items-center pt-2 text-primary-fixed-dim text-[11px] font-semibold">
-                <div>
-                  <p>Change Due:</p>
-                  <p className="text-sm font-bold text-white font-mono-numbers mt-0.5">PKR {changeDue.toFixed(2)}</p>
-                </div>
-                <div className="text-right">
-                  <p>New Ledger Bal:</p>
-                  <p className="text-sm font-bold text-white font-mono-numbers mt-0.5">PKR {newBalance.toFixed(2)}</p>
-                </div>
-              </div>
-            </div>
-
             {/* Glowing Save button with active loading spinner */}
             <button
               onClick={handleSaveSale}

@@ -1,7 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { sendChatToBackend, type ChatResponse } from '@/lib/api';
+import React, { createContext, useContext, useState } from 'react';
 
 export interface Customer {
   id: string;
@@ -11,11 +10,8 @@ export interface Customer {
   channel: string;
   neighborhood: string;
   address: string;
-  creditLimit: number;
-  balance: number;
   status: 'Active' | 'Inactive';
   notes: string;
-  healthScore: number;
   lastVisitDays: number;
   preferredProducts?: { name: string; pct: number }[];
 }
@@ -36,20 +32,32 @@ export interface Invoice {
   dueDate: string;
   amount: number;
   discount: number;
-  status: 'Paid' | 'Unpaid' | 'Partial' | 'Overdue';
-  paymentType: 'Cash' | 'Udhar' | 'Partial';
+  status: 'Paid';
   items: InvoiceItem[];
   notes: string;
 }
 
-export interface Transaction {
+export interface Supplier {
   id: string;
-  customerId: string;
-  customerName: string;
-  type: 'Credit Sale' | 'Repayment' | 'Opening Balance';
-  amount: number;
+  name: string;
+  contactPerson: string;
+  phone: string;
+  category: string;
+  address: string;
+  status: 'Active' | 'Inactive';
+  notes: string;
+}
+
+export interface SupplierInvoice {
+  id: string;
+  supplierId: string;
+  supplierName: string;
   date: string;
-  ref: string;
+  amount: number;
+  discount: number;
+  status: 'Paid';
+  items: InvoiceItem[];
+  notes: string;
 }
 
 export interface Notification {
@@ -82,53 +90,157 @@ export interface CommunicationLog {
   timestamp: string;
 }
 
-export interface AlaraChatMessage {
-  id: string;
-  sender: 'user' | 'alara';
-  text: string;
-  cardType?: 'metric' | 'confirmation' | 'invoice' | 'sale_confirmation' | 'customer_confirmation';
-  cardData?: any;
+export interface StockItem {
+  sku: string;
+  product: string;
+  category: string;
+  current: number;
+  reorder: number;
+  stockIn: number;
+  stockOut: number;
+  route: string;
+  /** The supplier this product is restocked from — links Inventory to Suppliers. */
+  supplierId?: string;
 }
 
-export interface ChatThread {
-  id: string;
-  title: string;
-  messages: AlaraChatMessage[];
-  createdAt: number;
-  updatedAt: number;
+/** A purchase line item — same shape as InvoiceItem, plus an optional `sku` so
+ *  the purchase can update an exact existing inventory row instead of
+ *  matching by product name. */
+export interface PurchaseLineItem extends InvoiceItem {
+  sku?: string;
 }
 
 interface AppContextType {
   customers: Customer[];
   invoices: Invoice[];
-  transactions: Transaction[];
+  suppliers: Supplier[];
+  supplierInvoices: SupplierInvoice[];
   notifications: Notification[];
   connectQueue: ConnectQueueItem[];
   commLogs: CommunicationLog[];
-  chatThreads: ChatThread[];
-  activeChatId: string;
-  chatMessages: AlaraChatMessage[];
-  addCustomer: (customer: Omit<Customer, 'id' | 'healthScore' | 'lastVisitDays'>) => Customer;
+  inventory: StockItem[];
+  addCustomer: (customer: Omit<Customer, 'id' | 'lastVisitDays'>) => Customer;
+  updateCustomer: (id: string, patch: Partial<Customer>) => Customer | null;
   recordSale: (
     customerId: string,
-    paymentType: 'Cash' | 'Udhar' | 'Partial',
     items: InvoiceItem[],
     discount: number,
-    notes: string,
-    amountPaid: number
+    notes: string
   ) => Invoice;
-  recordPayment: (customerId: string, amount: number) => void;
-  sendChatMessage: (text: string) => void;
-  startNewChat: () => void;
-  selectChatThread: (threadId: string) => void;
-  confirmChatSale: (messageId: string) => void;
-  confirmChatCustomer: (messageId: string) => Customer | null;
+  addSupplier: (supplier: Omit<Supplier, 'id'>) => Supplier;
+  recordPurchase: (
+    supplierId: string,
+    items: PurchaseLineItem[],
+    discount: number,
+    notes: string
+  ) => SupplierInvoice;
+  recordStockIn: (sku: string, quantity: number) => StockItem | null;
+  addInventoryItem: (item: Omit<StockItem, 'stockIn' | 'stockOut'>) => StockItem;
   sendWhatsAppReminder: (customerId: string, messageContent: string, type?: 'WhatsApp' | 'SMS' | 'Call') => void;
   recordCustomerReply: (customerId: string, messageContent: string, type?: 'WhatsApp' | 'SMS' | 'Call') => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
-const CHAT_CACHE_KEY = 'alara-chat-cache-v1';
+
+const TYPE_CATALOG: Record<string, { name: string; unit: string; price: number }[]> = {
+  Household: [
+    { name: 'Nestle Milkpak 1L', unit: 'pcs', price: 320 },
+    { name: 'Cooking Oil 5L', unit: 'tin', price: 2500 },
+    { name: 'Tapal Danedar 475g', unit: 'pack', price: 1150 },
+    { name: 'Sugar 1kg', unit: 'kg', price: 165 },
+  ],
+  Retailer: [
+    { name: 'Lays Chips', unit: 'ctn', price: 2200 },
+    { name: 'Cadbury Dairy Milk', unit: 'box', price: 1800 },
+    { name: 'Coca Cola 1.5L', unit: 'crate', price: 2400 },
+    { name: 'Tapal Danedar 475g', unit: 'pack', price: 1150 },
+  ],
+  Wholesaler: [
+    { name: 'Basmati Rice 25kg', unit: 'bag', price: 6200 },
+    { name: 'Wheat Flour 10kg', unit: 'bag', price: 1450 },
+    { name: 'Ghee 5kg', unit: 'tin', price: 2850 },
+    { name: 'Surf Excel', unit: 'ctn', price: 3900 },
+  ],
+  'Hotel / Restaurant': [
+    { name: 'Basmati Rice 25kg', unit: 'bag', price: 6200 },
+    { name: 'Cooking Oil 5L', unit: 'tin', price: 2500 },
+    { name: 'Sugar 1kg', unit: 'kg', price: 165 },
+    { name: 'Tea', unit: 'pack', price: 980 },
+  ],
+  Corporate: [
+    { name: 'Mineral Water 1.5L', unit: 'crate', price: 1250 },
+    { name: 'Tea', unit: 'pack', price: 980 },
+    { name: 'Sugar 1kg', unit: 'kg', price: 165 },
+    { name: 'Biscuits Assorted', unit: 'box', price: 1450 },
+  ],
+};
+
+const preferredItem = (name: string, type: string, fallbackIndex: number) => {
+  const catalog = TYPE_CATALOG[type] ?? TYPE_CATALOG.Household;
+  const match = catalog.find((item) => item.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(item.name.toLowerCase()));
+  return match ?? { ...catalog[fallbackIndex % catalog.length], name };
+};
+
+const isoDaysAgo = (days: number) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+};
+
+const buildSeedInvoices = (seedCustomers: Customer[]): Invoice[] =>
+  seedCustomers.flatMap((customer, index) => {
+    const catalog = TYPE_CATALOG[customer.type] ?? TYPE_CATALOG.Household;
+    const baseQty =
+      customer.type === 'Wholesaler' ? 5 :
+      customer.type === 'Hotel / Restaurant' ? 4 :
+      customer.type === 'Retailer' ? 3 :
+      customer.type === 'Corporate' ? 3 :
+      2;
+    const dates = [
+      Math.max(customer.lastVisitDays, 0),
+      customer.lastVisitDays + 11 + (index % 5),
+    ];
+
+    return dates.map((daysAgo, visitIndex) => {
+      const firstSource = customer.preferredProducts?.[visitIndex]?.name ?? catalog[(index + visitIndex) % catalog.length].name;
+      const secondSource = customer.preferredProducts?.[visitIndex + 1]?.name ?? catalog[(index + visitIndex + 1) % catalog.length].name;
+      const first = preferredItem(firstSource, customer.type, index + visitIndex);
+      const second = preferredItem(secondSource, customer.type, index + visitIndex + 1);
+      const items: InvoiceItem[] = [
+        {
+          name: first.name,
+          quantity: baseQty + (index % 3) + visitIndex,
+          unit: first.unit,
+          price: first.price,
+          total: (baseQty + (index % 3) + visitIndex) * first.price,
+        },
+        {
+          name: second.name,
+          quantity: Math.max(1, baseQty - 1 + ((index + visitIndex) % 2)),
+          unit: second.unit,
+          price: second.price,
+          total: Math.max(1, baseQty - 1 + ((index + visitIndex) % 2)) * second.price,
+        },
+      ];
+      const amount = items.reduce((sum, item) => sum + item.total, 0);
+      const invoiceNo = 2040 + index * 2 + visitIndex;
+      const date = isoDaysAgo(daysAgo);
+
+      return {
+        id: `INV-${invoiceNo}`,
+        customerId: customer.id,
+        customerName: customer.name,
+        date,
+        dueDate: date,
+        amount,
+        discount: 0,
+        status: 'Paid' as const,
+        items,
+        notes: `Seeded sale history for ${customer.name}; customer sales are calculated from invoices.`,
+      };
+    });
+  });
 
 export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // --- Seed Data ---
@@ -141,11 +253,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Clifton Block 2',
       address: 'House 43B, Lane 5, Clifton, Karachi',
-      creditLimit: 50000,
-      balance: 15000,
       status: 'Active',
-      notes: 'Owes PKR 15,000 for 18 days. Exceeded credit limit.',
-      healthScore: 45,
+      notes: 'Long-standing Clifton household customer — keep engaged.',
       lastVisitDays: 18,
       preferredProducts: [
         { name: 'Dal Chana', pct: 40 },
@@ -161,11 +270,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'DHA Phase 2',
       address: 'Flat A-4, DHA Phase 2, Karachi',
-      creditLimit: 20000,
-      balance: 0,
       status: 'Active',
       notes: 'Has not purchased in 9 days. Usually visits every 4 days.',
-      healthScore: 78,
       lastVisitDays: 9,
       preferredProducts: [
         { name: 'Nestle Milkpak', pct: 50 },
@@ -181,11 +287,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Saddar',
       address: 'Shop 12, Confectionary Market, Saddar, Karachi',
-      creditLimit: 100000,
-      balance: 4500,
       status: 'Active',
       notes: 'Invoice #INV-2041 due tomorrow.',
-      healthScore: 92,
       lastVisitDays: 1,
       preferredProducts: [
         { name: 'Cadbury Dairy Milk', pct: 60 },
@@ -201,11 +304,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Gulshan-e-Iqbal',
       address: 'Main KDA Market, Block 6, Gulshan, Karachi',
-      creditLimit: 80000,
-      balance: 12000,
       status: 'Active',
       notes: 'Payment failed for online transfer.',
-      healthScore: 60,
       lastVisitDays: 5,
       preferredProducts: [
         { name: 'Wheat Flour 10kg', pct: 55 },
@@ -221,11 +321,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Nazimabad',
       address: 'House 18, Nazimabad, Karachi',
-      creditLimit: 30000,
-      balance: 8500,
       status: 'Active',
-      notes: 'Regular udhar customer. Prefers short WhatsApp updates.',
-      healthScore: 69,
+      notes: 'Regular customer. Prefers short WhatsApp updates.',
       lastVisitDays: 3,
       preferredProducts: [
         { name: 'Tea', pct: 35 },
@@ -241,11 +338,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Clifton Block 4',
       address: 'Shop 10, Clifton Block 4, Karachi',
-      creditLimit: 20000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 0 days ago.',
-      healthScore: 82,
       lastVisitDays: 0,
     },
     {
@@ -256,11 +350,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'DHA Phase 5',
       address: 'Shop 11, DHA Phase 5, Karachi',
-      creditLimit: 30000,
-      balance: 3700,
       status: 'Active',
-      notes: 'Owes PKR 3,700. Last seen 3 days ago.',
-      healthScore: 59,
+      notes: 'Last seen 3 days ago.',
       lastVisitDays: 3,
     },
     {
@@ -271,11 +362,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Saddar',
       address: 'Shop 12, Saddar, Karachi',
-      creditLimit: 40000,
-      balance: 5400,
       status: 'Active',
-      notes: 'Owes PKR 5,400. Last seen 6 days ago.',
-      healthScore: 60,
+      notes: 'Last seen 6 days ago.',
       lastVisitDays: 6,
     },
     {
@@ -286,11 +374,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Gulshan-e-Iqbal',
       address: 'Shop 13, Gulshan-e-Iqbal, Karachi',
-      creditLimit: 50000,
-      balance: 7100,
       status: 'Active',
-      notes: 'Owes PKR 7,100. Last seen 9 days ago.',
-      healthScore: 61,
+      notes: 'Last seen 9 days ago.',
       lastVisitDays: 9,
     },
     {
@@ -301,11 +386,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Nazimabad',
       address: 'Shop 14, Nazimabad, Karachi',
-      creditLimit: 60000,
-      balance: 8800,
       status: 'Active',
-      notes: 'Owes PKR 8,800. Last seen 12 days ago.',
-      healthScore: 62,
+      notes: 'Last seen 12 days ago.',
       lastVisitDays: 12,
     },
     {
@@ -316,11 +398,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'PECHS Block 6',
       address: 'Shop 15, PECHS Block 6, Karachi',
-      creditLimit: 70000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 15 days ago.',
-      healthScore: 63,
       lastVisitDays: 15,
     },
     {
@@ -331,11 +410,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Korangi',
       address: 'Shop 16, Korangi, Karachi',
-      creditLimit: 80000,
-      balance: 12200,
       status: 'Active',
-      notes: 'Owes PKR 12,200. Last seen 18 days ago.',
-      healthScore: 64,
+      notes: 'Last seen 18 days ago.',
       lastVisitDays: 18,
     },
     {
@@ -346,11 +422,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Malir Cantt',
       address: 'Shop 17, Malir Cantt, Karachi',
-      creditLimit: 90000,
-      balance: 13900,
       status: 'Active',
-      notes: 'Owes PKR 13,900. Last seen 21 days ago.',
-      healthScore: 65,
+      notes: 'Last seen 21 days ago.',
       lastVisitDays: 21,
     },
     {
@@ -361,11 +434,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'North Nazimabad',
       address: 'Shop 18, North Nazimabad, Karachi',
-      creditLimit: 20000,
-      balance: 15600,
       status: 'Active',
-      notes: 'Owes PKR 15,600. Last seen 2 days ago.',
-      healthScore: 66,
+      notes: 'Last seen 2 days ago.',
       lastVisitDays: 2,
     },
     {
@@ -376,11 +446,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Gulistan-e-Johar',
       address: 'Shop 19, Gulistan-e-Johar, Karachi',
-      creditLimit: 30000,
-      balance: 17300,
       status: 'Active',
-      notes: 'Owes PKR 17,300. Last seen 5 days ago.',
-      healthScore: 67,
+      notes: 'Last seen 5 days ago.',
       lastVisitDays: 5,
     },
     {
@@ -391,11 +458,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Clifton Block 4',
       address: 'Shop 20, Clifton Block 4, Karachi',
-      creditLimit: 40000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 8 days ago.',
-      healthScore: 68,
       lastVisitDays: 8,
     },
     {
@@ -406,11 +470,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'DHA Phase 5',
       address: 'Shop 21, DHA Phase 5, Karachi',
-      creditLimit: 50000,
-      balance: 20700,
       status: 'Active',
-      notes: 'Owes PKR 20,700. Last seen 11 days ago.',
-      healthScore: 69,
+      notes: 'Last seen 11 days ago.',
       lastVisitDays: 11,
     },
     {
@@ -421,11 +482,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Saddar',
       address: 'Shop 22, Saddar, Karachi',
-      creditLimit: 60000,
-      balance: 22400,
       status: 'Active',
-      notes: 'Owes PKR 22,400. Last seen 14 days ago.',
-      healthScore: 70,
+      notes: 'Last seen 14 days ago.',
       lastVisitDays: 14,
     },
     {
@@ -436,11 +494,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Gulshan-e-Iqbal',
       address: 'Shop 23, Gulshan-e-Iqbal, Karachi',
-      creditLimit: 70000,
-      balance: 24100,
       status: 'Active',
-      notes: 'Owes PKR 24,100. Last seen 17 days ago.',
-      healthScore: 71,
+      notes: 'Last seen 17 days ago.',
       lastVisitDays: 17,
     },
     {
@@ -451,11 +506,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Nazimabad',
       address: 'Shop 24, Nazimabad, Karachi',
-      creditLimit: 80000,
-      balance: 25800,
       status: 'Active',
-      notes: 'Owes PKR 25,800. Last seen 20 days ago.',
-      healthScore: 72,
+      notes: 'Last seen 20 days ago.',
       lastVisitDays: 20,
     },
     {
@@ -466,11 +518,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'PECHS Block 6',
       address: 'Shop 25, PECHS Block 6, Karachi',
-      creditLimit: 90000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 1 days ago.',
-      healthScore: 85,
       lastVisitDays: 1,
     },
     {
@@ -481,11 +530,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Korangi',
       address: 'Shop 26, Korangi, Karachi',
-      creditLimit: 20000,
-      balance: 29200,
       status: 'Active',
-      notes: 'Owes PKR 29,200. Last seen 4 days ago.',
-      healthScore: 44,
+      notes: 'Last seen 4 days ago.',
       lastVisitDays: 4,
     },
     {
@@ -496,11 +542,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Malir Cantt',
       address: 'Shop 27, Malir Cantt, Karachi',
-      creditLimit: 30000,
-      balance: 2900,
       status: 'Active',
-      notes: 'Owes PKR 2,900. Last seen 7 days ago.',
-      healthScore: 60,
+      notes: 'Last seen 7 days ago.',
       lastVisitDays: 7,
     },
     {
@@ -511,11 +554,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'North Nazimabad',
       address: 'Shop 28, North Nazimabad, Karachi',
-      creditLimit: 40000,
-      balance: 4600,
       status: 'Active',
-      notes: 'Owes PKR 4,600. Last seen 10 days ago.',
-      healthScore: 61,
+      notes: 'Last seen 10 days ago.',
       lastVisitDays: 10,
     },
     {
@@ -526,11 +566,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Gulistan-e-Johar',
       address: 'Shop 29, Gulistan-e-Johar, Karachi',
-      creditLimit: 50000,
-      balance: 6300,
       status: 'Active',
-      notes: 'Owes PKR 6,300. Last seen 13 days ago.',
-      healthScore: 62,
+      notes: 'Last seen 13 days ago.',
       lastVisitDays: 13,
     },
     {
@@ -541,11 +578,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Clifton Block 4',
       address: 'Shop 30, Clifton Block 4, Karachi',
-      creditLimit: 60000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 16 days ago.',
-      healthScore: 63,
       lastVisitDays: 16,
     },
     {
@@ -556,11 +590,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'DHA Phase 5',
       address: 'Shop 31, DHA Phase 5, Karachi',
-      creditLimit: 70000,
-      balance: 9700,
       status: 'Active',
-      notes: 'Owes PKR 9,700. Last seen 19 days ago.',
-      healthScore: 64,
+      notes: 'Last seen 19 days ago.',
       lastVisitDays: 19,
     },
     {
@@ -571,11 +602,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'Saddar',
       address: 'Shop 32, Saddar, Karachi',
-      creditLimit: 80000,
-      balance: 11400,
       status: 'Active',
-      notes: 'Owes PKR 11,400. Last seen 0 days ago.',
-      healthScore: 65,
+      notes: 'Last seen 0 days ago.',
       lastVisitDays: 0,
     },
     {
@@ -586,11 +614,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Gulshan-e-Iqbal',
       address: 'Shop 33, Gulshan-e-Iqbal, Karachi',
-      creditLimit: 90000,
-      balance: 13100,
       status: 'Active',
-      notes: 'Owes PKR 13,100. Last seen 3 days ago.',
-      healthScore: 66,
+      notes: 'Last seen 3 days ago.',
       lastVisitDays: 3,
     },
     {
@@ -601,11 +626,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Nazimabad',
       address: 'Shop 34, Nazimabad, Karachi',
-      creditLimit: 20000,
-      balance: 14800,
       status: 'Active',
-      notes: 'Owes PKR 14,800. Last seen 6 days ago.',
-      healthScore: 67,
+      notes: 'Last seen 6 days ago.',
       lastVisitDays: 6,
     },
     {
@@ -616,11 +638,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'PECHS Block 6',
       address: 'Shop 35, PECHS Block 6, Karachi',
-      creditLimit: 30000,
-      balance: 0,
       status: 'Active',
       notes: 'Active account, last visit 9 days ago.',
-      healthScore: 68,
       lastVisitDays: 9,
     },
     {
@@ -631,11 +650,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Korangi',
       address: 'Shop 36, Korangi, Karachi',
-      creditLimit: 40000,
-      balance: 18200,
       status: 'Active',
-      notes: 'Owes PKR 18,200. Last seen 12 days ago.',
-      healthScore: 69,
+      notes: 'Last seen 12 days ago.',
       lastVisitDays: 12,
     },
     {
@@ -646,11 +662,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'WhatsApp',
       neighborhood: 'Malir Cantt',
       address: 'Shop 37, Malir Cantt, Karachi',
-      creditLimit: 50000,
-      balance: 19900,
       status: 'Active',
-      notes: 'Owes PKR 19,900. Last seen 15 days ago.',
-      healthScore: 70,
+      notes: 'Last seen 15 days ago.',
       lastVisitDays: 15,
     },
     {
@@ -661,11 +674,8 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'Call',
       neighborhood: 'North Nazimabad',
       address: 'Shop 38, North Nazimabad, Karachi',
-      creditLimit: 60000,
-      balance: 21600,
       status: 'Active',
-      notes: 'Owes PKR 21,600. Last seen 18 days ago.',
-      healthScore: 71,
+      notes: 'Last seen 18 days ago.',
       lastVisitDays: 18,
     },
     {
@@ -676,108 +686,108 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       channel: 'SMS',
       neighborhood: 'Gulistan-e-Johar',
       address: 'Shop 39, Gulistan-e-Johar, Karachi',
-      creditLimit: 70000,
-      balance: 23300,
       status: 'Active',
-      notes: 'Owes PKR 23,300. Last seen 21 days ago.',
-      healthScore: 72,
+      notes: 'Last seen 21 days ago.',
       lastVisitDays: 21,
     },
   ]);
 
-  const [invoices, setInvoices] = useState<Invoice[]>([
+  const [invoices, setInvoices] = useState<Invoice[]>(() => buildSeedInvoices(customers));
+
+  const [suppliers, setSuppliers] = useState<Supplier[]>([
     {
-      id: 'INV-2040',
-      customerId: 'cust-riaz',
-      customerName: 'Riaz Ahmed',
-      date: '2023-10-06',
-      dueDate: '2023-10-09',
-      amount: 15000,
-      discount: 0,
-      status: 'Overdue',
-      paymentType: 'Udhar',
-      items: [
-        { name: 'Cooking Oil 5L', quantity: 6, unit: 'pcs', price: 2500, total: 15000 },
-      ],
-      notes: 'Delivered to Clifton residence',
+      id: 'sup-grain',
+      name: 'Al-Madina Grain Traders',
+      contactPerson: 'Hassan Ali',
+      phone: '+92 300 1112233',
+      category: 'Grains & Pulses',
+      address: 'Shop 8, Lyari Grain Market, Karachi',
+      status: 'Active',
+      notes: 'Bulk rice, wheat flour and pulses. Delivers weekly.',
     },
     {
-      id: 'INV-2041',
-      customerId: 'cust-iqbal',
-      customerName: 'Iqbal Confectionary',
-      date: '2023-10-23',
-      dueDate: '2023-10-24',
-      amount: 4500,
-      discount: 0,
-      status: 'Unpaid',
-      paymentType: 'Udhar',
-      items: [
-        { name: 'Chocolate Box', quantity: 3, unit: 'box', price: 1500, total: 4500 },
-      ],
-      notes: 'Store pickup',
+      id: 'sup-spice',
+      name: 'Karachi Spice Co.',
+      contactPerson: 'Imran Sheikh',
+      phone: '+92 301 2223344',
+      category: 'Spices',
+      address: 'Plot 14, Jodia Bazaar, Karachi',
+      status: 'Active',
+      notes: 'Whole and ground spices, sourced from Sindh.',
     },
     {
-      id: 'INV-2039',
-      customerId: 'cust-malik',
-      customerName: 'Malik Store',
-      date: '2023-10-22',
-      dueDate: '2023-10-22',
-      amount: 12000,
-      discount: 0,
-      status: 'Partial',
-      paymentType: 'Partial',
-      items: [
-        { name: 'Basmati Rice 25kg', quantity: 4, unit: 'bag', price: 3000, total: 12000 },
-      ],
-      notes: 'Failed online transfer. Only paid cash PKR 5,000.',
+      id: 'sup-dairy',
+      name: 'Sindh Dairy Suppliers',
+      contactPerson: 'Bilal Qureshi',
+      phone: '+92 302 3334455',
+      category: 'Dairy & Beverages',
+      address: 'Warehouse 3, SITE Area, Karachi',
+      status: 'Active',
+      notes: 'Milk, cream and packaged beverages — cold chain delivery.',
+    },
+    {
+      id: 'sup-general',
+      name: 'City Wholesale Mart',
+      contactPerson: 'Faisal Rana',
+      phone: '+92 303 4445566',
+      category: 'General Goods',
+      address: 'Warehouse 11, Korangi Industrial Area, Karachi',
+      status: 'Active',
+      notes: 'Detergents, toiletries and packaged snacks.',
     },
   ]);
 
-  const [transactions, setTransactions] = useState<Transaction[]>([
+  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>([
     {
-      id: 'TXN-101',
-      customerId: 'cust-riaz',
-      customerName: 'Riaz Ahmed',
-      type: 'Credit Sale',
-      amount: 15000,
-      date: '2023-10-06 11:30 AM',
-      ref: 'INV-2040',
+      id: 'PINV-1001',
+      supplierId: 'sup-grain',
+      supplierName: 'Al-Madina Grain Traders',
+      date: isoDaysAgo(6),
+      amount: 48000,
+      discount: 0,
+      status: 'Paid',
+      items: [
+        { name: 'Basmati Rice 25kg', quantity: 12, unit: 'bag', price: 3200, total: 38400 },
+        { name: 'Wheat Flour 20kg', quantity: 8, unit: 'bag', price: 1200, total: 9600 },
+      ],
+      notes: 'Weekly grain restock.',
     },
     {
-      id: 'TXN-102',
-      customerId: 'cust-malik',
-      customerName: 'Malik Store',
-      type: 'Credit Sale',
-      amount: 12000,
-      date: '2023-10-22 04:15 PM',
-      ref: 'INV-2039',
+      id: 'PINV-1002',
+      supplierId: 'sup-dairy',
+      supplierName: 'Sindh Dairy Suppliers',
+      date: isoDaysAgo(3),
+      amount: 21000,
+      discount: 500,
+      status: 'Paid',
+      items: [
+        { name: 'Milk Crate (24x1L)', quantity: 10, unit: 'crate', price: 2000, total: 20000 },
+        { name: 'Cream 200ml', quantity: 25, unit: 'pcs', price: 60, total: 1500 },
+      ],
+      notes: 'Cold-chain delivery received on time.',
     },
     {
-      id: 'TXN-103',
-      customerId: 'cust-malik',
-      customerName: 'Malik Store',
-      type: 'Repayment',
-      amount: 5000,
-      date: '2023-10-22 04:30 PM',
-      ref: 'Cash Receipt',
-    },
-    {
-      id: 'TXN-104',
-      customerId: 'cust-iqbal',
-      customerName: 'Iqbal Confectionary',
-      type: 'Credit Sale',
-      amount: 4500,
-      date: '2023-10-23 09:00 AM',
-      ref: 'INV-2041',
+      id: 'PINV-1003',
+      supplierId: 'sup-general',
+      supplierName: 'City Wholesale Mart',
+      date: isoDaysAgo(1),
+      amount: 15600,
+      discount: 0,
+      status: 'Paid',
+      items: [
+        { name: 'Surf Excel 1kg', quantity: 20, unit: 'bag', price: 650, total: 13000 },
+        { name: 'Lays Chips Family Pack', quantity: 26, unit: 'pcs', price: 100, total: 2600 },
+      ],
+      notes: '',
     },
   ]);
 
-  const [notifications, setNotifications] = useState<Notification[]>([
+  const [notifications] = useState<Notification[]>([
     {
       id: 'ntf-1',
       urgency: 'HIGH',
       customerName: 'Riaz Ahmed',
-      description: 'Owes PKR 15,000 for 18 days. Exceeded credit limit.',
+      description: 'Long-standing Clifton household customer — keep engaged.',
       actions: [
         { label: 'Message', actionType: 'chat' },
         { label: 'Record Payment', actionType: 'payment' },
@@ -825,7 +835,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-riaz',
       customerName: 'Riaz Ahmed',
       phone: '+92 300 9876543',
-      reason: '18 Days Overdue Payment',
+      reason: 'No purchase in 18 days',
       dueDays: 18,
       lastAction: 'Called 2 days ago',
       health: 'critical',
@@ -858,7 +868,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-2',
       customerName: 'Maria Qureshi',
       phone: '+92 312 2469134',
-      reason: '18 Days Overdue Payment (PKR 3,700)',
+      reason: 'No purchase in 18 days',
       dueDays: 3,
       lastAction: 'WhatsApp sent 2 days ago',
       health: 'warning',
@@ -891,7 +901,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-5',
       customerName: 'Bilal Hussain',
       phone: '+92 315 6172835',
-      reason: 'Credit Limit Breach Alert (PKR 8,800)',
+      reason: 'High-value customer — re-engage',
       dueDays: 12,
       lastAction: 'WhatsApp sent 2 days ago',
       health: 'warning',
@@ -946,7 +956,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-10',
       customerName: 'Hina Raza',
       phone: '+92 320 1234567',
-      reason: '18 Days Overdue Payment (PKR 17,300)',
+      reason: 'No purchase in 18 days',
       dueDays: 5,
       lastAction: 'No outreach',
       health: 'warning',
@@ -979,7 +989,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-13',
       customerName: 'Tariq Mehmood',
       phone: '+92 323 1604937',
-      reason: 'Credit Limit Breach Alert (PKR 22,400)',
+      reason: 'High-value customer — re-engage',
       dueDays: 14,
       lastAction: 'No outreach',
       health: 'warning',
@@ -1012,7 +1022,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-17',
       customerName: 'Naveed Anwar',
       phone: '+92 327 2098763',
-      reason: 'Credit Limit Breach Alert (PKR 29,200)',
+      reason: 'High-value customer — re-engage',
       dueDays: 4,
       lastAction: 'WhatsApp sent 2 days ago',
       health: 'critical',
@@ -1023,7 +1033,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-18',
       customerName: 'Mehwish Tariq',
       phone: '+92 328 2222220',
-      reason: '18 Days Overdue Payment (PKR 2,900)',
+      reason: 'No purchase in 18 days',
       dueDays: 7,
       lastAction: 'Called last week',
       health: 'warning',
@@ -1144,7 +1154,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-29',
       customerName: 'Rizwan Saeed',
       phone: '+92 339 3580244',
-      reason: 'Credit Limit Breach Alert (PKR 21,600)',
+      reason: 'High-value customer — re-engage',
       dueDays: 18,
       lastAction: 'WhatsApp sent 2 days ago',
       health: 'warning',
@@ -1169,7 +1179,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-riaz',
       sender: 'Store',
       type: 'WhatsApp',
-      content: 'Salam Riaz Sahib, please note that invoice INV-2040 of PKR 15,000 was due on Oct 9. Let us know when we can collect cash or if you can transfer online. Shukriya.',
+      content: 'Salam Riaz Sahib, kaafi din se mulaqat nahi hui. Aaj kuch khaas offers hain — zaroor tashreef laaiye. Shukriya.',
       timestamp: 'Oct 21, 2023 11:00 AM',
     },
     {
@@ -1193,7 +1203,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-3',
       sender: 'Store',
       type: 'SMS',
-      content: 'Reminder: your invoice is due. Please confirm payment timing. Shukriya.',
+      content: 'Reminder: humare paas aap ke pasandeeda items dobara aa gaye hain. Shukriya.',
       timestamp: 'Oct 22, 2023 11:00 AM',
     },
     {
@@ -1209,7 +1219,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerId: 'cust-gen-17',
       sender: 'Store',
       type: 'Call',
-      content: 'Salam, this is PSO SME. Your pending balance reminder — please clear at your earliest. Shukriya.',
+      content: 'Salam, this is PSO SME. Just checking in — humare latest offers aap ka intezaar kar rahe hain. Shukriya.',
       timestamp: 'Oct 24, 2023 9:00 AM',
     },
     {
@@ -1222,171 +1232,47 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     },
   ]);
 
-  const demoChatMessages: AlaraChatMessage[] = [
-    {
-      id: 'm-1',
-      sender: 'user',
-      text: 'Show outstanding credit statistics.',
-    },
-    {
-      id: 'm-2',
-      sender: 'alara',
-      text: 'Here is your current credit and udhar distribution summary:',
-      cardType: 'metric',
-      cardData: {
-        totalOutstanding: 'PKR 31,500',
-        activeDefaulters: 3,
-        recoveryRate: '74.2%',
-      },
-    },
-    {
-      id: 'm-3',
-      sender: 'user',
-      text: 'Draft reminder for Riaz Ahmed.',
-    },
-    {
-      id: 'm-4',
-      sender: 'alara',
-      text: 'Here is the draft reminder. Click "Send" to forward it to Riaz Ahmed on WhatsApp.',
-      cardType: 'confirmation',
-      cardData: {
-        recipientName: 'Riaz Ahmed',
-        phoneNumber: '+92 300 9876543',
-        message: 'Salam Riaz Sahib, this is a reminder from PSO SME. Your pending balance is PKR 15,000, which has been outstanding for 18 days. Please clear it at your earliest. Shukriya.',
-        customerId: 'cust-riaz',
-      },
-    },
-  ];
-
-  const [chatMessages, setChatMessages] = useState<AlaraChatMessage[]>(demoChatMessages);
-  const [activeChatId, setActiveChatId] = useState('chat-demo');
-  const [chatThreads, setChatThreads] = useState<ChatThread[]>([
-    {
-      id: 'chat-demo',
-      title: 'Outstanding credit stats',
-      messages: demoChatMessages,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    },
+  const [inventory, setInventory] = useState<StockItem[]>([
+    { sku: 'MILK-1L', product: 'Nestle Milkpak 1L', category: 'Dairy', current: 42, reorder: 30, stockIn: 120, stockOut: 78, route: 'Clifton Route', supplierId: 'sup-dairy' },
+    { sku: 'OIL-5L', product: 'Cooking Oil 5L', category: 'Grocery', current: 4, reorder: 12, stockIn: 24, stockOut: 20, route: 'Gulshan Route', supplierId: 'sup-general' },
+    { sku: 'RICE-25', product: 'Basmati Rice 25kg', category: 'Grocery', current: 8, reorder: 15, stockIn: 40, stockOut: 32, route: 'Saddar Route', supplierId: 'sup-grain' },
+    { sku: 'SUGAR-1K', product: 'Sugar 1kg', category: 'Grocery', current: 22, reorder: 20, stockIn: 80, stockOut: 58, route: 'DHA Route', supplierId: 'sup-general' },
+    { sku: 'TEA-475', product: 'Tapal Danedar 475g', category: 'Grocery', current: 3, reorder: 10, stockIn: 36, stockOut: 33, route: 'Nazimabad Route', supplierId: 'sup-general' },
   ]);
-  const [chatCacheReady, setChatCacheReady] = useState(false);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(CHAT_CACHE_KEY);
-      if (!raw) {
-        setChatCacheReady(true);
-        return;
-      }
-
-      const cached = JSON.parse(raw) as { threads?: ChatThread[]; activeChatId?: string };
-      if (!Array.isArray(cached.threads) || cached.threads.length === 0) {
-        setChatCacheReady(true);
-        return;
-      }
-
-      const activeId = cached.activeChatId && cached.threads.some((thread) => thread.id === cached.activeChatId)
-        ? cached.activeChatId
-        : cached.threads[0].id;
-      const activeThread = cached.threads.find((thread) => thread.id === activeId) || cached.threads[0];
-
-      setChatThreads(cached.threads);
-      setActiveChatId(activeId);
-      setChatMessages(activeThread.messages);
-      setChatCacheReady(true);
-    } catch {
-      setChatCacheReady(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!chatCacheReady) return;
-    setChatThreads((prev) =>
-      prev.map((thread) =>
-        thread.id === activeChatId
-          ? {
-              ...thread,
-              title: chatMessages.find((msg) => msg.sender === 'user')?.text.slice(0, 64) || 'New chat',
-              messages: chatMessages,
-              updatedAt: Date.now(),
-            }
-          : thread
-      )
-    );
-  }, [activeChatId, chatMessages, chatCacheReady]);
-
-  useEffect(() => {
-    if (!chatCacheReady) return;
-    window.localStorage.setItem(
-      CHAT_CACHE_KEY,
-      JSON.stringify({ threads: chatThreads, activeChatId })
-    );
-  }, [activeChatId, chatCacheReady, chatThreads]);
 
   // --- Actions ---
 
-  const addCustomer = (customerData: Omit<Customer, 'id' | 'healthScore' | 'lastVisitDays'>): Customer => {
+  const addCustomer = (customerData: Omit<Customer, 'id' | 'lastVisitDays'>): Customer => {
     const newId = `cust-${Math.random().toString(36).substr(2, 9)}`;
     const newCustomer: Customer = {
       ...customerData,
       id: newId,
-      healthScore: 100, // New customers start with perfect score
       lastVisitDays: 0,
-      preferredProducts: [],
+      preferredProducts: customerData.preferredProducts ?? [],
     };
 
     setCustomers((prev) => [...prev, newCustomer]);
-
-    // Also add to transactions if opening balance exists
-    if (newCustomer.balance !== 0) {
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: '2-digit',
-      }) + ' ' + now.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-      setTransactions((prev) => [
-        ...prev,
-        {
-          id: `TXN-${Math.floor(Math.random() * 1000 + 100)}`,
-          customerId: newId,
-          customerName: newCustomer.name,
-          type: 'Opening Balance',
-          amount: Math.abs(newCustomer.balance),
-          date: dateStr,
-          ref: 'Initial Import',
-        },
-      ]);
-    }
-
     return newCustomer;
   };
 
   const recordSale = (
     customerId: string,
-    paymentType: 'Cash' | 'Udhar' | 'Partial',
     items: InvoiceItem[],
     discount: number,
-    notes: string,
-    amountPaid: number
+    notes: string
   ): Invoice => {
     const customer = customers.find((c) => c.id === customerId) || {
       id: 'walk-in',
       name: 'Walk-in Customer',
-      balance: 0,
     };
 
     const subtotal = items.reduce((sum, item) => sum + item.total, 0);
     const grandTotal = subtotal - discount;
-    const unpaidAmount = paymentType === 'Cash' ? 0 : grandTotal - amountPaid;
 
     const newInvoiceId = `INV-${Math.floor(Math.random() * 10000 + 3000)}`;
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
-    const dueDateStr = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const dueDateStr = dateStr;
 
     const newInvoice: Invoice = {
       id: newInvoiceId,
@@ -1396,469 +1282,161 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       dueDate: dueDateStr,
       amount: grandTotal,
       discount,
-      status: unpaidAmount <= 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Unpaid',
-      paymentType,
+      status: 'Paid',
       items,
       notes,
     };
 
     setInvoices((prev) => [newInvoice, ...prev]);
 
-    // Update customer balance if not walk-in
-    if (customer.id !== 'walk-in' && unpaidAmount > 0) {
+    // A completed sale counts as a visit — reset recency for that customer.
+    if (customer.id !== 'walk-in') {
       setCustomers((prev) =>
-        prev.map((c) => (c.id === customer.id ? { ...c, balance: c.balance + unpaidAmount } : c))
+        prev.map((c) => (c.id === customer.id ? { ...c, lastVisitDays: 0 } : c))
       );
     }
-
-    // Add to transaction log
-    const dateStrFull = now.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-    }) + ' ' + now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    setTransactions((prev) => {
-      const txs = [...prev];
-      if (paymentType === 'Udhar' || paymentType === 'Partial') {
-        txs.unshift({
-          id: `TXN-${Math.floor(Math.random() * 1000 + 100)}`,
-          customerId: customer.id,
-          customerName: customer.name,
-          type: 'Credit Sale',
-          amount: grandTotal,
-          date: dateStrFull,
-          ref: newInvoiceId,
-        });
-      }
-      if (amountPaid > 0) {
-        txs.unshift({
-          id: `TXN-${Math.floor(Math.random() * 1000 + 100)}`,
-          customerId: customer.id,
-          customerName: customer.name,
-          type: 'Repayment',
-          amount: amountPaid,
-          date: dateStrFull,
-          ref: paymentType === 'Cash' ? newInvoiceId : 'Cash Payment',
-        });
-      }
-      return txs;
-    });
 
     return newInvoice;
   };
 
-  const recordPayment = (customerId: string, amount: number) => {
-    const customer = customers.find((c) => c.id === customerId);
-    if (!customer) return;
+  const addSupplier = (supplierData: Omit<Supplier, 'id'>): Supplier => {
+    const newSupplier: Supplier = {
+      ...supplierData,
+      id: `sup-${Math.random().toString(36).substr(2, 9)}`,
+    };
+    setSuppliers((prev) => [...prev, newSupplier]);
+    return newSupplier;
+  };
 
+  const recordPurchase = (
+    supplierId: string,
+    items: PurchaseLineItem[],
+    discount: number,
+    notes: string
+  ): SupplierInvoice => {
+    const supplier = suppliers.find((s) => s.id === supplierId);
+    if (!supplier) throw new Error('Supplier not found');
+
+    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    const grandTotal = subtotal - discount;
+
+    const newInvoiceId = `PINV-${Math.floor(Math.random() * 10000 + 2000)}`;
+    const dateStr = new Date().toISOString().split('T')[0];
+
+    // Strip the UI-only `sku` field before storing — the invoice itself only
+    // needs the InvoiceItem shape.
+    const invoiceItems: InvoiceItem[] = items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity,
+      unit: item.unit,
+      price: item.price,
+      total: item.total,
+    }));
+
+    const newPurchase: SupplierInvoice = {
+      id: newInvoiceId,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      date: dateStr,
+      amount: grandTotal,
+      discount,
+      status: 'Paid',
+      items: invoiceItems,
+      notes,
+    };
+
+    setSupplierInvoices((prev) => [newPurchase, ...prev]);
+
+    // Restock inventory: match by SKU when the row referenced an existing
+    // tracked product; otherwise create a new product linked to this
+    // supplier so future purchases can select it directly.
+    setInventory((prev) => {
+      let next = prev;
+      for (const item of items) {
+        if (item.sku) {
+          next = next.map((stockItem) =>
+            stockItem.sku === item.sku
+              ? { ...stockItem, current: stockItem.current + item.quantity, stockIn: stockItem.stockIn + item.quantity }
+              : stockItem,
+          );
+          continue;
+        }
+        const existing = next.find(
+          (stockItem) =>
+            stockItem.supplierId === supplier.id &&
+            stockItem.product.toLowerCase() === item.name.toLowerCase(),
+        );
+        if (existing) {
+          next = next.map((stockItem) =>
+            stockItem.sku === existing.sku
+              ? { ...stockItem, current: stockItem.current + item.quantity, stockIn: stockItem.stockIn + item.quantity }
+              : stockItem,
+          );
+        } else {
+          const newSku = `SKU-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 100)}`;
+          next = [
+            ...next,
+            {
+              sku: newSku,
+              product: item.name,
+              category: supplier.category,
+              current: item.quantity,
+              reorder: Math.max(5, Math.ceil(item.quantity * 0.25)),
+              stockIn: item.quantity,
+              stockOut: 0,
+              route: '—',
+              supplierId: supplier.id,
+            },
+          ];
+        }
+      }
+      return next;
+    });
+
+    return newPurchase;
+  };
+
+  const updateCustomer = (id: string, patch: Partial<Customer>): Customer | null => {
+    let updated: Customer | null = null;
     setCustomers((prev) =>
-      prev.map((c) => (c.id === customerId ? { ...c, balance: Math.max(0, c.balance - amount) } : c))
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        updated = { ...c, ...patch };
+        return updated;
+      }),
     );
-
-    const now = new Date();
-    const dateStrFull = now.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-    }) + ' ' + now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    const newTxId = `TXN-${Math.floor(Math.random() * 1000 + 100)}`;
-    setTransactions((prev) => [
-      {
-        id: newTxId,
-        customerId,
-        customerName: customer.name,
-        type: 'Repayment',
-        amount,
-        date: dateStrFull,
-        ref: 'Cash Receipt',
-      },
-      ...prev,
-    ]);
-
-    // Resolve invoice payments (simplification: mark overdue or unpaid invoices as paid until amount is exhausted)
-    setInvoices((prev) => {
-      let remainingAmount = amount;
-      return prev.map((inv) => {
-        if (inv.customerId === customerId && (inv.status === 'Unpaid' || inv.status === 'Overdue' || inv.status === 'Partial')) {
-          if (remainingAmount <= 0) return inv;
-          
-          const unpaidInvoiceAmt = inv.amount; // simplification
-          if (remainingAmount >= unpaidInvoiceAmt) {
-            remainingAmount -= unpaidInvoiceAmt;
-            return { ...inv, status: 'Paid' };
-          } else {
-            remainingAmount = 0;
-            return { ...inv, status: 'Partial' };
-          }
-        }
-        return inv;
-      });
-    });
-
-    // Remove high-urgency notifications if balance is cleared
-    // or reduce notification count
-    setNotifications((prev) =>
-      prev.filter((n) => !(n.customerName === customer.name && n.urgency === 'HIGH' && amount >= 12000))
-    );
-
-    // Also remove from ConnectQueue
-    setConnectQueue((prev) =>
-      prev.filter((q) => !(q.customerId === customerId && amount >= 10000))
-    );
+    return updated;
   };
 
-  const createSaleDraftFromText = (text: string): AlaraChatMessage | null => {
-    const lower = text.toLowerCase();
-    if (!/\b(liya|lia|le liya|saman|kharid|bika|sale|becha)\b/.test(lower)) return null;
+  const recordStockIn = (sku: string, quantity: number): StockItem | null => {
+    if (!Number.isFinite(quantity) || quantity <= 0) return null;
+    let updated: StockItem | null = null;
+    setInventory((prev) =>
+      prev.map((item) => {
+        if (item.sku !== sku) return item;
+        updated = { ...item, current: item.current + quantity, stockIn: item.stockIn + quantity };
+        return updated;
+      }),
+    );
+    return updated;
+  };
 
-    const amountMatch = text.match(/\d[\d,]*/);
-    const amount = amountMatch ? Number(amountMatch[0].replace(/,/g, '')) : 0;
-    const nameMatch = text.match(/^\s*([a-zA-Z][a-zA-Z\s]+?)\s+(?:ne|nei|nay|ny|ka|ki)\b/i);
-    const spokenName = nameMatch?.[1]?.trim() || '';
-    const customer = customers.find((entry) => {
-      const customerName = entry.name.toLowerCase();
-      const query = spokenName.toLowerCase();
-      return customerName === query || customerName.includes(query) || query.split(/\s+/).some((part) => part.length > 2 && customerName.includes(part));
-    });
+  const addInventoryItem = (item: Omit<StockItem, 'stockIn' | 'stockOut'>): StockItem => {
+    const cleanName = item.product.trim().toLowerCase();
+    let result: StockItem = { ...item, stockIn: item.current, stockOut: 0 };
+    setInventory((prev) => {
+      const existing = prev.find((entry) => entry.product.trim().toLowerCase() === cleanName);
+      if (!existing) return [...prev, result];
 
-    if (!amount || !spokenName) return null;
-    if (!customer) {
-      return {
-        id: `chat-${Math.random()}`,
-        sender: 'alara',
-        text: `Kaunsa ${spokenName}? Customer list mein exact match nahi mila.`,
+      result = {
+        ...existing,
+        current: existing.current + item.current,
+        stockIn: existing.stockIn + item.current,
+        reorder: existing.reorder || item.reorder,
       };
-    }
-
-    const paymentType: 'Cash' | 'Udhar' | 'Partial' = lower.includes('udhar') ? 'Udhar' : lower.includes('partial') ? 'Partial' : 'Cash';
-    const amountPaid = paymentType === 'Cash' ? amount : 0;
-    const unpaid = paymentType === 'Cash' ? 0 : amount - amountPaid;
-    const balanceAfter = customer.balance + unpaid;
-
-    return {
-      id: `chat-${Math.random()}`,
-      sender: 'alara',
-      text: `${customer.name} ka PKR ${amount.toLocaleString()} sale draft ready hai. Confirm karein to ${paymentType === 'Udhar' ? 'udhar balance update hoga' : 'sale record hogi'}.`,
-      cardType: 'sale_confirmation',
-      cardData: {
-        customer_id: customer.id,
-        customer_name: customer.name,
-        amount,
-        payment_type: paymentType,
-        amount_paid: amountPaid,
-        balance_before: customer.balance,
-        balance_after: balanceAfter,
-        item_name: 'Quick sale',
-        status: 'pending',
-      },
-    };
-  };
-
-  const confirmChatSale = (messageId: string) => {
-    const msg = chatMessages.find((entry) => entry.id === messageId);
-    const data = (msg?.cardData ?? {}) as Record<string, unknown>;
-    const customerId = String(data.customer_id ?? data.customerId ?? '');
-    const amount = Number(data.amount ?? 0);
-    const paymentType = (String(data.payment_type ?? data.paymentType ?? 'Cash') as 'Cash' | 'Udhar' | 'Partial');
-    const amountPaid = Number(data.amount_paid ?? data.amountPaid ?? (paymentType === 'Cash' ? amount : 0));
-    const customer = customers.find((entry) => entry.id === customerId);
-
-    if (!msg || msg.cardType !== 'sale_confirmation' || !customer || amount <= 0) {
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `chat-${Math.random()}`,
-          sender: 'alara',
-          text: 'Sale confirm nahi ho saki. Customer aur amount dobara check kar dein.',
-        },
-      ]);
-      return;
-    }
-
-    const invoice = recordSale(
-      customer.id,
-      paymentType,
-      [{ name: String(data.item_name ?? 'Quick sale'), quantity: 1, unit: 'item', price: amount, total: amount }],
-      0,
-      'Recorded via Alara chat confirmation',
-      amountPaid,
-    );
-    const unpaid = paymentType === 'Cash' ? 0 : Math.max(0, amount - amountPaid);
-    const balanceAfter = customer.balance + unpaid;
-
-    setChatMessages((prev) => [
-      ...prev.map((entry) =>
-        entry.id === messageId
-          ? {
-              ...entry,
-              cardData: {
-                ...(entry.cardData ?? {}),
-                status: 'confirmed',
-                invoice_id: invoice.id,
-                balance_after: balanceAfter,
-              },
-            }
-          : entry
-      ),
-      {
-        id: `chat-${Math.random()}`,
-        sender: 'alara',
-        text: paymentType === 'Cash'
-          ? `${customer.name} ka Rs ${amount.toLocaleString()} cash sale record ho gaya. Invoice ${invoice.id}.`
-          : `${customer.name} ka Rs ${amount.toLocaleString()} udhar likh diya. Baqi ab Rs ${balanceAfter.toLocaleString()}. Invoice ${invoice.id}.`,
-        cardType: 'invoice',
-        cardData: {
-          invoiceId: invoice.id,
-          customerName: customer.name,
-          amount: `PKR ${amount.toLocaleString()}`,
-          date: invoice.date,
-          items: [{ name: 'Quick sale', qty: '1 item', price: `PKR ${amount.toLocaleString()}` }],
-        },
-      },
-    ]);
-  };
-
-  // Confirm an add-customer draft card: creates the customer, marks the card
-  // confirmed, and returns the new record (chat page navigates to its detail).
-  const confirmChatCustomer = (messageId: string): Customer | null => {
-    const msg = chatMessages.find((entry) => entry.id === messageId);
-    const d = (msg?.cardData ?? {}) as Record<string, unknown>;
-    if (!msg || msg.cardType !== 'customer_confirmation' || d.status === 'confirmed') return null;
-
-    const newCustomer = addCustomer({
-      name: String(d.name ?? 'New Customer'),
-      phone: String(d.phone ?? ''),
-      type: String(d.type ?? 'Household'),
-      channel: 'WhatsApp',
-      neighborhood: String(d.area ?? ''),
-      address: '',
-      creditLimit: 20000,
-      balance: 0,
-      status: 'Active',
-      notes: 'Added via Alara chat',
-      preferredProducts: [],
+      return prev.map((entry) => (entry.sku === existing.sku ? result : entry));
     });
-
-    setChatMessages((prev) => [
-      ...prev.map((entry) =>
-        entry.id === messageId
-          ? { ...entry, cardData: { ...(entry.cardData ?? {}), status: 'confirmed', customer_id: newCustomer.id } }
-          : entry,
-      ),
-      { id: `chat-${Math.random()}`, sender: 'alara', text: `${newCustomer.name} add ho gaya.` },
-    ]);
-    return newCustomer;
-  };
-
-  // Apply a backend chat action to local state so the UI stays in sync with
-  // the workflow the backend already executed deterministically.
-  const applyChatAction = (res: ChatResponse) => {
-    const action = res.action;
-    const data = (res.card_data ?? {}) as Record<string, unknown>;
-    if (!action) return;
-    // Sales & customer-adds go through an explicit confirmation card instead.
-    if (action.workflow === 'record_sale' || action.workflow === 'add_customer') return;
-    const customerId = (data.customer_id as string) ?? '';
-    const amount = Number((action.params as Record<string, unknown>).amount ?? 0);
-
-    if (action.workflow === 'create_invoice' && customerId) {
-      // Mirror the backend-generated invoice into the local ledger (as udhar).
-      const rawItems = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]) : [];
-      const invItems = rawItems.map((it) => {
-        const quantity = Number(it.qty ?? 1);
-        const price = Number(it.rate ?? 0);
-        return {
-          name: String(it.name ?? 'Item'),
-          quantity,
-          unit: 'item',
-          price,
-          total: Number(it.total ?? quantity * price),
-        };
-      });
-      if (invItems.length) {
-        recordSale(customerId, 'Udhar', invItems, 0, 'Invoice via Alara chat', 0);
-      }
-      return;
-    }
-
-    if (action.workflow === 'record_payment' && customerId && amount > 0) {
-      recordPayment(customerId, amount);
-    } else if (action.workflow === 'record_sale' && customerId && amount > 0) {
-      const pt = ((action.params as Record<string, unknown>).payment_type as 'Cash' | 'Udhar' | 'Partial') || 'Cash';
-      recordSale(
-        customerId,
-        pt,
-        [{ name: 'Quick sale', quantity: 1, unit: 'item', price: amount, total: amount }],
-        0,
-        'Recorded via Alara chat',
-        pt === 'Cash' ? amount : 0,
-      );
-    } else if (action.workflow === 'add_customer') {
-      const p = action.params as Record<string, unknown>;
-      addCustomer({
-        name: (p.name as string) || 'New Customer',
-        phone: (p.phone as string) || '',
-        type: (p.type as string) || 'Household',
-        channel: 'WhatsApp',
-        neighborhood: (p.area as string) || '',
-        address: '',
-        creditLimit: 20000,
-        balance: 0,
-        status: 'Active',
-        notes: 'Added via Alara chat',
-        preferredProducts: [],
-      });
-    }
-  };
-
-  const startNewChat = () => {
-    const now = Date.now();
-    const newThread: ChatThread = {
-      id: `chat-thread-${now}`,
-      title: 'New chat',
-      messages: [],
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    setChatThreads((prev) => [newThread, ...prev]);
-    setActiveChatId(newThread.id);
-    setChatMessages([]);
-  };
-
-  const selectChatThread = (threadId: string) => {
-    const thread = chatThreads.find((entry) => entry.id === threadId);
-    if (!thread) return;
-
-    setActiveChatId(thread.id);
-    setChatMessages(thread.messages);
-  };
-
-  const sendChatMessage = (text: string) => {
-    const userMsg: AlaraChatMessage = {
-      id: `chat-${Math.random()}`,
-      sender: 'user',
-      text,
-    };
-
-    setChatMessages((prev) => [...prev, userMsg]);
-    const localSaleDraft = createSaleDraftFromText(text);
-
-    // Prior turns (this `chatMessages` closure is the history BEFORE the new
-    // message), so Alara remembers earlier chats and resolves follow-ups.
-    const history = chatMessages.slice(-12).map((m) => ({
-      role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
-      content: m.text,
-    }));
-
-    // Send the live customer roster so the backend can resolve ANY customer the
-    // user has (the AppContext is the source of truth, not the backend seed).
-    const customerRoster = customers.map((c) => ({
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      balance: c.balance,
-      creditLimit: c.creditLimit,
-      lastVisitDays: c.lastVisitDays,
-    }));
-
-    // Primary path: deterministic-workflow backend (OpenAI when configured).
-    sendChatToBackend(text, { current_page: 'chat', customers: customerRoster }, history)
-      .then((res) => {
-        if (localSaleDraft?.cardType === 'sale_confirmation') {
-          setChatMessages((prev) => [...prev, localSaleDraft]);
-          return;
-        }
-
-        applyChatAction(res);
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `chat-${Math.random()}`,
-            sender: 'alara',
-            text: res.text,
-            cardType: res.card_type ?? undefined,
-            cardData: res.card_data ? { ...res.card_data, status: 'pending' } : undefined,
-          },
-        ]);
-      })
-      .catch(() => {
-        // Backend unreachable → original offline keyword simulation.
-        localSimulatedReply(text);
-      });
-  };
-
-  // Offline fallback: original keyword-based mock reply.
-  const localSimulatedReply = (text: string) => {
-    setTimeout(() => {
-      const lower = text.toLowerCase();
-      let reply: AlaraChatMessage;
-
-      const saleDraft = createSaleDraftFromText(text);
-      if (saleDraft) {
-        reply = saleDraft;
-      } else if (lower.includes('outstanding') || lower.includes('credit') || lower.includes('balance') || lower.includes('udhar')) {
-        const total = customers.reduce((sum, c) => sum + c.balance, 0);
-        const activeDef = customers.filter((c) => c.balance > 0).length;
-        reply = {
-          id: `chat-${Math.random()}`,
-          sender: 'alara',
-          text: `I checked the ledger. You currently have a total outstanding balance of PKR ${total.toLocaleString()}. Here is the breakdown:`,
-          cardType: 'metric',
-          cardData: {
-            totalOutstanding: `PKR ${total.toLocaleString()}`,
-            activeDefaulters: activeDef,
-            recoveryRate: '78.5%',
-          },
-        };
-      } else if (lower.includes('riaz') || lower.includes('remind')) {
-        reply = {
-          id: `chat-${Math.random()}`,
-          sender: 'alara',
-          text: `Here is the drafted reminder. You can send it directly to Riaz Ahmed.`,
-          cardType: 'confirmation',
-          cardData: {
-            recipientName: 'Riaz Ahmed',
-            phoneNumber: '+92 300 9876543',
-            message: 'Salam Riaz Sahib, this is a reminder from PSO SME. Your pending balance is PKR 15,000, which has been outstanding for 18 days. Please clear it at your earliest. Shukriya.',
-            customerId: 'cust-riaz',
-          },
-        };
-      } else if (lower.includes('invoice') || lower.includes('bill')) {
-        reply = {
-          id: `chat-${Math.random()}`,
-          sender: 'alara',
-          text: `I've prepared a draft invoice based on your query:`,
-          cardType: 'invoice',
-          cardData: {
-            invoiceId: 'INV-2042',
-            customerName: 'Walk-in Customer',
-            amount: 'PKR 1,550.00',
-            date: 'Oct 24, 2023',
-            items: [
-              { name: 'Cooking Oil 1L', qty: '5 bag', price: '155.00' },
-              { name: 'Basmati Rice 1kg', qty: '5 kg', price: '155.00' },
-            ],
-          },
-        };
-      } else {
-        reply = {
-          id: `chat-${Math.random()}`,
-          sender: 'alara',
-          text: `Ji, I can help you record sales, view customer ledgers, draft WhatsApp reminders, or answer questions about your shop's revenue trends. What would you like to do?`,
-        };
-      }
-
-      setChatMessages((prev) => [...prev, reply]);
-    }, 1000);
+    return result;
   };
 
   const getCommTimestamp = () => {
@@ -1930,21 +1508,19 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       value={{
         customers,
         invoices,
-        transactions,
+        suppliers,
+        supplierInvoices,
         notifications,
         connectQueue,
         commLogs,
-        chatThreads,
-        activeChatId,
-        chatMessages,
+        inventory,
         addCustomer,
+        updateCustomer,
         recordSale,
-        recordPayment,
-        sendChatMessage,
-        startNewChat,
-        selectChatThread,
-        confirmChatSale,
-        confirmChatCustomer,
+        addSupplier,
+        recordPurchase,
+        recordStockIn,
+        addInventoryItem,
         sendWhatsAppReminder,
         recordCustomerReply,
       }}

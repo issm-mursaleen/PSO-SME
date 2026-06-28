@@ -97,7 +97,7 @@ const buildInvoiceHtml = (invoice: Invoice) => {
     <section class="bill">
       <p class="muted strong">BILL TO</p>
       <p class="strong">${escapeHtml(invoice.customerName)}</p>
-      <p class="muted">Payment Type: ${escapeHtml(invoice.paymentType)} | Status: ${escapeHtml(invoice.status)}</p>
+      <p class="muted">Status: Paid</p>
     </section>
     <table>
       <thead>
@@ -178,7 +178,6 @@ export default function NewInvoice() {
     name: 'Walk-in Customer',
     neighborhood: 'Karachi Central',
     phone: '',
-    balance: 0,
   };
 
   // Calculations
@@ -240,7 +239,7 @@ export default function NewInvoice() {
     if (!validate()) return;
 
     setIsSaving(true);
-    triggerToast('Generating credit invoice...', 'info');
+    triggerToast('Generating invoice...', 'info');
 
     setTimeout(() => {
       const invoiceItems: InvoiceItem[] = rows.map((r) => ({
@@ -251,8 +250,8 @@ export default function NewInvoice() {
         total: r.quantity * r.price,
       }));
 
-      // Record as Credit Sale (Udhar); use the REAL id returned for confirmation
-      const saved = recordSale(selectedCustomerId, 'Udhar', invoiceItems, discountVal, notes, 0);
+      // Record as a completed (paid) sale; use the REAL id returned for confirmation
+      const saved = recordSale(selectedCustomerId, invoiceItems, discountVal, notes);
       const previewInvoice: Invoice = {
         ...saved,
         dueDate,
@@ -268,7 +267,7 @@ export default function NewInvoice() {
 
   const handleWhatsAppDraft = () => {
     if (!validate()) return;
-    const summary = `Salam ${selectedCustomerInfo.name}, here is your invoice draft from PSO SME. Total: PKR ${grandTotal.toLocaleString()}, due ${dueDate}. Shukriya.`;
+    const summary = `Salam ${selectedCustomerInfo.name}, here is your invoice from PSO SME. Total: PKR ${grandTotal.toLocaleString()}. Shukriya.`;
     if (selectedCustomerId !== 'walk-in') {
       sendWhatsAppReminder(selectedCustomerId, summary);
       triggerToast(`Draft sent to ${selectedCustomerInfo.name} on WhatsApp.`, 'success');
@@ -309,8 +308,8 @@ export default function NewInvoice() {
           <div className="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm overflow-hidden p-6 space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="font-headline-sm font-bold text-primary text-lg">Create Invoice</h2>
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-tertiary-container text-on-tertiary-container px-2.5 py-1 rounded-full">
-                Credit / Udhar
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-primary-fixed text-on-primary-fixed-variant px-2.5 py-1 rounded-full">
+                Paid Sale
               </span>
             </div>
 
@@ -339,7 +338,7 @@ export default function NewInvoice() {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-bold text-on-surface-variant block">Due Date</label>
+                <label className="text-xs font-bold text-on-surface-variant block">Delivery / Due Date</label>
                 <input
                   type="date"
                   className="w-full border border-outline-variant rounded-lg p-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
@@ -348,13 +347,6 @@ export default function NewInvoice() {
                 />
               </div>
             </div>
-
-            {selectedCustomerId !== 'walk-in' && 'balance' in selectedCustomerInfo && selectedCustomerInfo.balance > 0 && (
-              <div className="flex items-center gap-2 text-[11px] font-bold text-error bg-error-container/40 border border-error/20 rounded-lg px-3 py-2">
-                <Icon name="info" size={16} />
-                {selectedCustomerInfo.name} already owes PKR {selectedCustomerInfo.balance.toLocaleString()}. This invoice will add to their balance.
-              </div>
-            )}
 
             {/* Line Items Editor */}
             <div className="space-y-2">
@@ -643,7 +635,7 @@ export default function NewInvoice() {
                 <div className="text-[11px]">
                   <p className="font-bold text-on-surface-variant uppercase tracking-wider text-[9px] mb-1">Bill To:</p>
                   <p className="font-bold text-on-surface text-xs">{savedInvoice.customerName}</p>
-                  <p className="text-on-surface-variant">Payment Type: {savedInvoice.paymentType}</p>
+                  <p className="text-on-surface-variant">Status: Paid</p>
                 </div>
 
                 <div className="border border-outline-variant rounded-lg overflow-hidden">

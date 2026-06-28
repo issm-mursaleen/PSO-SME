@@ -5,7 +5,7 @@ the workflow logic."""
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
 _lock = threading.Lock()
@@ -19,54 +19,42 @@ customers: list[dict[str, Any]] = [
     {
         "id": "cust-riaz", "name": "Riaz Ahmed", "phone": "+92 300 9876543",
         "type": "Household", "channel": "WhatsApp", "neighborhood": "Clifton Block 2",
-        "creditLimit": 50000, "balance": 15000, "status": "Active",
-        "healthScore": 45, "lastVisitDays": 18,
+        "status": "Active", "lastVisitDays": 18,
     },
     {
         "id": "cust-sana", "name": "Sana Bibi", "phone": "+92 312 3456789",
         "type": "Household", "channel": "Call", "neighborhood": "DHA Phase 2",
-        "creditLimit": 20000, "balance": 0, "status": "Active",
-        "healthScore": 78, "lastVisitDays": 9,
+        "status": "Active", "lastVisitDays": 9,
     },
     {
         "id": "cust-iqbal", "name": "Iqbal Confectionary", "phone": "+92 333 4567890",
         "type": "Retailer", "channel": "SMS", "neighborhood": "Saddar",
-        "creditLimit": 100000, "balance": 4500, "status": "Active",
-        "healthScore": 92, "lastVisitDays": 1,
+        "status": "Active", "lastVisitDays": 1,
     },
     {
         "id": "cust-malik", "name": "Malik Store", "phone": "+92 321 5556667",
         "type": "Wholesaler", "channel": "WhatsApp", "neighborhood": "Gulshan-e-Iqbal",
-        "creditLimit": 80000, "balance": 12000, "status": "Active",
-        "healthScore": 60, "lastVisitDays": 5,
+        "status": "Active", "lastVisitDays": 5,
     },
     {
         "id": "cust-nadeem", "name": "Nadeem Chacha", "phone": "+92 300 2223344",
         "type": "Household", "channel": "WhatsApp", "neighborhood": "Nazimabad",
-        "creditLimit": 30000, "balance": 8500, "status": "Active",
-        "healthScore": 69, "lastVisitDays": 3,
+        "status": "Active", "lastVisitDays": 3,
     },
 ]
 
 invoices: list[dict[str, Any]] = [
     {
         "id": "INV-2040", "customerId": "cust-riaz", "customerName": "Riaz Ahmed",
-        "date": "2026-06-06", "amount": 15000, "status": "Overdue", "paymentType": "Udhar",
+        "date": "2026-06-06", "amount": 15000, "status": "Paid",
     },
     {
         "id": "INV-2041", "customerId": "cust-iqbal", "customerName": "Iqbal Confectionary",
-        "date": "2026-06-24", "amount": 4500, "status": "Unpaid", "paymentType": "Udhar",
+        "date": "2026-06-24", "amount": 4500, "status": "Paid",
     },
 ]
 
-transactions: list[dict[str, Any]] = [
-    {
-        "id": "TXN-1001", "customerId": "cust-malik", "customerName": "Malik Store",
-        "type": "Repayment", "amount": 8000, "date": "2026-06-20", "ref": "Cash Receipt",
-    },
-]
-
-_seq = {"inv": 3000, "txn": 2000, "cust": 100}
+_seq = {"inv": 3000, "cust": 100}
 
 
 def _next(kind: str, prefix: str) -> str:
@@ -77,10 +65,6 @@ def _next(kind: str, prefix: str) -> str:
 
 def next_invoice_id() -> str:
     return _next("inv", "INV-")
-
-
-def next_txn_id() -> str:
-    return _next("txn", "TXN-")
 
 
 def next_customer_id() -> str:
@@ -102,10 +86,7 @@ def sync_customers(rows: list[dict[str, Any]]) -> None:
             "type": r.get("type", "Household"),
             "channel": r.get("channel", "WhatsApp"),
             "neighborhood": r.get("neighborhood", ""),
-            "creditLimit": r.get("creditLimit", 0),
-            "balance": r.get("balance", 0),
             "status": r.get("status", "Active"),
-            "healthScore": r.get("healthScore", 70),
             "lastVisitDays": r.get("lastVisitDays", 0),
         }
         for r in rows
@@ -148,17 +129,6 @@ def days_since(date_str: str) -> int:
         return (_today() - d).days
     except ValueError:
         return 0
-
-
-def recovered_since(days: int) -> tuple[int, int]:
-    """(total recovered, distinct customers) in the last `days`."""
-    cutoff = _today() - timedelta(days=days)
-    rows = [
-        t for t in transactions
-        if t["type"] == "Repayment" and _parse(t["date"]) >= cutoff
-    ]
-    total = sum(t["amount"] for t in rows)
-    return total, len({t["customerId"] for t in rows})
 
 
 def _parse(date_str: str) -> datetime:

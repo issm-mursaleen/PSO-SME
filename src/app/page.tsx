@@ -5,11 +5,32 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ShoppingCart, Banknote, UserPlus, Receipt, Megaphone, MessagesSquare,
-  TrendingUp, AlertTriangle, CheckCircle2, History, MoreVertical, Lightbulb,
+  TrendingUp, CheckCircle2, History, MoreVertical, Lightbulb,
   Plus, BellRing,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, MetricCard, BarTrend, ProgressBar, Table, THead, Th, TBody, TRow, Td, Badge } from '@/components/ui';
+
+function money(value: number) { return `PKR ${Math.round(value).toLocaleString()}`; }
+
+/** Parses the dataset's date strings: "YYYY-MM-DD" or "YYYY-MM-DD h:mm AM/PM". */
+function parseDate(raw: string): Date {
+  const [datePart, ...timeParts] = raw.split(' ');
+  const [y, m, d] = datePart.split('-').map(Number);
+  if (!y || !m || !d) return new Date(NaN);
+  if (timeParts.length === 0) return new Date(y, m - 1, d);
+  const match = timeParts.join(' ').match(/(\d+):(\d+)\s*(AM|PM)/i);
+  let hour = 0, minute = 0;
+  if (match) {
+    hour = Number(match[1]) % 12;
+    minute = Number(match[2]);
+    if (/PM/i.test(match[3])) hour += 12;
+  }
+  return new Date(y, m - 1, d, hour, minute);
+}
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function endOfDay(d: Date) { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
+function isSameDay(a: Date, b: Date) { return startOfDay(a).getTime() === startOfDay(b).getTime(); }
 
 export default function Home() {
   const router = useRouter();
@@ -17,7 +38,6 @@ export default function Home() {
     customers,
     notifications,
     invoices,
-    transactions,
     connectQueue,
   } = useApp();
 
@@ -39,44 +59,57 @@ export default function Home() {
     if (id) router.push(`/customers/${id}`);
   };
 
-  // Calculate dynamic stats based on new invoice/payment actions on top of mockup baselines
-  const baseSales = 46850;
-  const baseCash = 31200;
-  const baseUdhar = 15650;
-  const baseRecovered = 8000;
-  const baseTxs = 27;
+  // "Today" is anchored to the most recent date actually present in the
+  // sales record — the demo data is dated 2023, so anchoring to the real wall
+  // clock would always show zero. Every figure below is a real sum, no
+  // baseline padding.
+  const anchor = React.useMemo(() => {
+    const dates = invoices.map((i) => parseDate(i.date)).filter((d) => !Number.isNaN(d.getTime()));
+    return dates.length ? new Date(Math.max(...dates.map((d) => d.getTime()))) : new Date();
+  }, [invoices]);
+  const yesterday = React.useMemo(() => { const d = new Date(anchor); d.setDate(d.getDate() - 1); return d; }, [anchor]);
 
-  const sessionSales = invoices
-    .filter((inv) => inv.id.startsWith('INV-3') || inv.id.startsWith('INV-4') || inv.id.startsWith('INV-5'))
-    .reduce((sum, inv) => sum + inv.amount, 0);
+  const todayInvoices = React.useMemo(() => invoices.filter((i) => isSameDay(parseDate(i.date), anchor)), [invoices, anchor]);
+  const yesterdaySales = React.useMemo(
+    () => invoices.filter((i) => isSameDay(parseDate(i.date), yesterday)).reduce((s, i) => s + i.amount, 0),
+    [invoices, yesterday],
+  );
 
-  const sessionCashSales = invoices
-    .filter((inv) => inv.id.startsWith('INV-3') || inv.id.startsWith('INV-4') || inv.id.startsWith('INV-5'))
-    .filter((inv) => inv.paymentType === 'Cash')
-    .reduce((sum, inv) => sum + inv.amount, 0);
-
-  const sessionUdharSales = invoices
-    .filter((inv) => inv.id.startsWith('INV-3') || inv.id.startsWith('INV-4') || inv.id.startsWith('INV-5'))
-    .filter((inv) => inv.paymentType === 'Udhar')
-    .reduce((sum, inv) => sum + inv.amount, 0);
-
-  const sessionRecovered = transactions
-    .filter((txn) => txn.id.startsWith('TXN-') && txn.type === 'Repayment' && txn.ref === 'Cash Receipt')
-    .reduce((sum, txn) => sum + txn.amount, 0);
-
-  const sessionTxsCount = invoices.filter((inv) => inv.id.startsWith('INV-3') || inv.id.startsWith('INV-4')).length +
-    transactions.filter((txn) => txn.type === 'Repayment' && txn.ref === 'Cash Receipt').length;
-
-  const totalSales = baseSales + sessionSales;
-  const totalCashSales = baseCash + sessionCashSales;
-  const totalUdharSales = baseUdhar + sessionUdharSales;
-  const totalRecovered = baseRecovered + sessionRecovered;
-  const totalTxs = baseTxs + sessionTxsCount;
+  const totalSales = todayInvoices.reduce((sum, inv) => sum + inv.amount, 0);
+  const totalTxs = todayInvoices.length;
+  const avgTicket = totalTxs ? Math.round(totalSales / totalTxs) : 0;
+  const activeCustomers = customers.filter((c) => c.status === 'Active').length;
   const totalPendingFollowups = connectQueue.length;
 
+  const salesVsYesterdayPct = yesterdaySales > 0 ? Math.round(((totalSales - yesterdaySales) / yesterdaySales) * 100) : null;
 
-  const cashPercentage = Math.round((totalCashSales / (totalSales || 1)) * 100);
-  const udharPercentage = 100 - cashPercentage;
+  // Top products today (by sales value) — from real invoice line items.
+  const topProducts = React.useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const inv of todayInvoices) {
+      for (const it of inv.items) {
+        totals[it.name] = (totals[it.name] ?? 0) + it.total;
+      }
+    }
+    return Object.entries(totals)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 4);
+  }, [todayInvoices]);
+  const topProductsMax = Math.max(...topProducts.map((p) => p.value), 1);
+
+  // Last 6 days ending the anchor — real daily sales for the trend chart.
+  const weekTrend = React.useMemo(() => {
+    const days: { label: string; total: number }[] = [];
+    for (let d = 5; d >= 0; d--) {
+      const day = new Date(anchor); day.setDate(day.getDate() - d);
+      const dStart = startOfDay(day), dEnd = endOfDay(day);
+      const total = invoices.filter((i) => { const dt = parseDate(i.date); return dt >= dStart && dt <= dEnd; }).reduce((s, i) => s + i.amount, 0);
+      days.push({ label: day.toLocaleDateString('en-US', { weekday: 'short' }), total });
+    }
+    return days;
+  }, [invoices, anchor]);
+  const maxWeekTotal = Math.max(...weekTrend.map((d) => d.total), 1);
 
   const quickActions = [
     { href: '/record-sale', icon: ShoppingCart, label: 'Record Sale' },
@@ -125,40 +158,39 @@ export default function Home() {
         <MetricCard
           label="Today's Sales"
           value={`PKR ${totalSales.toLocaleString()}`}
-          hint="12% higher than yesterday"
+          hint={salesVsYesterdayPct === null ? 'No sales yesterday to compare' : `${salesVsYesterdayPct >= 0 ? '+' : ''}${salesVsYesterdayPct}% vs yesterday`}
           hintIcon={<TrendingUp className="size-3.5" />}
-          tone="success"
-        />
-        <MetricCard
-          label="Cash Sales"
-          value={`PKR ${totalCashSales.toLocaleString()}`}
-          hint={`${cashPercentage}% of total sales`}
-          hintIcon={<Banknote className="size-3.5" />}
-        />
-        <MetricCard
-          label="Udhar Sales"
-          value={`PKR ${totalUdharSales.toLocaleString()}`}
-          hint="Requires follow-up"
-          hintIcon={<AlertTriangle className="size-3.5" />}
-          tone="warning"
-        />
-        <MetricCard
-          label="Payments Recovered"
-          value={`PKR ${totalRecovered.toLocaleString()}`}
-          hint="4 recoveries today"
-          hintIcon={<CheckCircle2 className="size-3.5" />}
           tone="success"
         />
         <MetricCard
           label="Transactions"
           value={totalTxs}
-          hint={`Avg. PKR ${(totalSales / (totalTxs || 1)).toFixed(0)}`}
+          hint={`Avg. PKR ${avgTicket.toLocaleString()}`}
+          hintIcon={<Receipt className="size-3.5" />}
+        />
+        <MetricCard
+          label="Avg Ticket"
+          value={`PKR ${avgTicket.toLocaleString()}`}
+          hint="Per sale today"
+          hintIcon={<Banknote className="size-3.5" />}
+        />
+        <MetricCard
+          label="Active Customers"
+          value={activeCustomers}
+          hint="Across the directory"
+          hintIcon={<CheckCircle2 className="size-3.5" />}
+          tone="success"
+        />
+        <MetricCard
+          label="Total Customers"
+          value={customers.length}
+          hint="Verified profiles"
           hintIcon={<Receipt className="size-3.5" />}
         />
         <MetricCard
           label="Pending Follow-ups"
           value={totalPendingFollowups}
-          hint="Urgent alerts active"
+          hint="Outreach queue"
           hintIcon={<History className="size-3.5" />}
           tone="danger"
         />
@@ -230,27 +262,42 @@ export default function Home() {
               <MoreVertical className="size-4 text-muted-foreground cursor-pointer" />
             </div>
             <BarTrend
-              data={[40, 65, 55, 85, 70, 95]}
-              labels={['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']}
-              tooltips={['Mon 12k', 'Tue 19k', 'Wed 16k', 'Thu 25k', 'Fri 21k', `Today ${(totalSales / 1000).toFixed(0)}k`]}
+              data={weekTrend.map((d) => Math.round((d.total / maxWeekTotal) * 100))}
+              labels={weekTrend.map((d) => d.label)}
+              tooltips={weekTrend.map((d) => `${d.label} ${money(d.total)}`)}
               height={140}
             />
           </Card>
 
-          {/* Cash vs Udhar */}
+          {/* Top Products Today */}
           <Card className="p-4">
-            <h3 className="text-sm font-semibold tracking-tight mb-4">Cash vs Udhar</h3>
-            <div className="space-y-4">
-              <ProgressBar value={cashPercentage} label="Cash Sales" dotClassName="bg-foreground" barClassName="bg-foreground" />
-              <ProgressBar value={udharPercentage} label="Udhar (Credit)" dotClassName="bg-warning" barClassName="bg-warning" />
-            </div>
+            <h3 className="text-sm font-semibold tracking-tight mb-4">Top Products Today</h3>
+            {topProducts.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic py-4 text-center">No sales recorded yet today.</p>
+            ) : (
+              <div className="space-y-4">
+                {topProducts.map((p) => (
+                  <ProgressBar
+                    key={p.name}
+                    value={Math.round((p.value / topProductsMax) * 100)}
+                    label={`${p.name} · ${money(p.value)}`}
+                    dotClassName="bg-foreground"
+                    barClassName="bg-foreground"
+                  />
+                ))}
+              </div>
+            )}
             <div className="mt-5 pt-4 border-t border-outline-variant flex items-center gap-3">
               <div className="p-2 rounded-lg bg-muted text-foreground">
                 <Lightbulb className="size-4" />
               </div>
               <div>
                 <p className="text-[11px] font-bold">Insight</p>
-                <p className="text-xs text-muted-foreground">Udhar is lower than the same day last week. Cash liquidity improving.</p>
+                <p className="text-xs text-muted-foreground">
+                  {topProducts.length === 0
+                    ? 'Record a sale to see your best-selling products here.'
+                    : `${topProducts[0].name} is today's top seller — keep it well stocked.`}
+                </p>
               </div>
             </div>
           </Card>

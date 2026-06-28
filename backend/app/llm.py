@@ -14,7 +14,7 @@ import json
 import re
 from typing import Any
 
-from . import config, workflows
+from . import config, usage, workflows
 from .schemas import (
     AddCustomerIn,
     ChatAction,
@@ -22,39 +22,220 @@ from .schemas import (
     ChatOut,
     CreateInvoiceIn,
     InvoiceItemIn,
+    PlanIn,
+    PlanOut,
     QueryIn,
-    RecordPaymentIn,
     RecordSaleIn,
+    ToolCallOut,
     WorkflowResult,
 )
 
+# ── Agentic planner ──────────────────────────────────────────────────────────
+# The planner is STATELESS: it picks one or more tools from the frontend-supplied
+# catalog and extracts their parameters. It never mutates state or does maths —
+# the frontend executes the calls against AppContext (the source of truth) and
+# enforces guardrails (confirmation cards) there.
+
+PLAN_SYSTEM_PROMPT = (
+    "You are Alara, a Roman-Urdu/English co-pilot for a Pakistani shopkeeper's "
+    "SALES, OUTREACH and CUSTOMER-MANAGEMENT app. There is NO credit/udhar concept — "
+    "every sale is fully paid; never talk about balances, outstanding, credit limits, "
+    "defaulters or repayments. You can drive the WHOLE app by calling the provided "
+    "tools: record sales, add/update customers, create invoices, receive stock, draft "
+    "outreach messages, run bulk outreach, answer sales/customer questions, and navigate "
+    "pages. Choose the matching tool(s) and extract their parameters. You may call "
+    "MULTIPLE tools when a request needs several steps. Never do arithmetic yourself — the "
+    "app computes everything. Resolve pronouns/follow-ups ('usko bhi message bhejo', 'same "
+    "customer') against earlier turns. Be PROACTIVE: when the user asks 'ab kya karun / what "
+    "next / koi suggestion', or right after you show a customer's details, call "
+    "`suggest_next_steps` (with that customer if one is in focus). Infer intent from the "
+    "customer's recency (lastVisitDays) and sales history rather than asking. If the user is "
+    "just chatting or intent is unclear, DON'T call a tool — reply briefly in friendly Roman Urdu.\n\n"
+    "ANSWER THE EXACT QUESTION FIRST. Do NOT dump a generic customer summary when the "
+    "user asked for ONE specific field. Resolve conversational references — 'ye', 'uska', "
+    "'woh', 'iski', 'last time' — to the customer discussed in earlier turns.\n\n"
+    "VISIT / RECENCY QUESTIONS ('X last time kab aaya/aayi', 'kitne din se nahi aaya', "
+    "'aakhri baar kab aaya') → call `customer_visit`. It returns the exact visit DATE, the "
+    "relative time ('3 din pehle'), the last sale amount, and typical frequency/next-expected "
+    "visit when derivable. When you phrase the reply: give the human-readable date AND the "
+    "relative time together, e.g. '24 June 2026 ko aaye the — yani 3 din pehle.' NEVER reduce "
+    "it to just '3d ago'. Exact clock time is NOT stored — if asked, say e.g. 'Exact time "
+    "record nahi hua', do NOT invent a time. Suggest at most ONE relevant next action.\n\n"
+    "'Konsi customers pichle N din mein nahi aayin / inactive' → `list_customers` with "
+    "filter='inactive' and idle_days=N.\n\n"
+    "ANALYTICAL ANSWERS — never answer a business question with a single metric when "
+    "richer data is available. 'sab se zyada business / most business / best customer' = "
+    "highest LIFETIME SALES value (query_data top_by_sales). For a 360° question about one "
+    "customer call `customer_insight`; for shop-wide ranking call `query_data`. These tools "
+    "return the figures, context and recommended actions — so do NOT invent numbers yourself.\n\n"
+    "PROGRESSIVE DISCLOSURE: simple question = short direct answer; analytical question = "
+    "answer + supporting metrics; full-profile request = detailed customer card. When you add "
+    "a short reply for an analytical question, follow this order: (1) seedha jawab, (2) key "
+    "figures, (3) relevant context, (4) anything notable, (5) best next action. If a required "
+    "field is missing, clearly kehdein ke woh data mojood nahi — guess mat karein. Reply "
+    "concise Roman Urdu matching the user's language."
+)
+
+
+def plan(payload: PlanIn) -> PlanOut:
+    if config.LLM_ENABLED and payload.tools:
+        try:
+            return _plan_with_llm(payload)
+        except Exception as exc:  # noqa: BLE001 — never 500 the chat; degrade.
+            print(f"[plan] LLM error, using fallback: {exc}")
+    return _plan_fallback(payload.message)
+
+
+def _plan_with_llm(payload: PlanIn) -> PlanOut:
+    from openai import OpenAI
+
+    client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+    system = PLAN_SYSTEM_PROMPT
+    if payload.context and payload.context.active_customer_id:
+        system += f"\nThe user is currently viewing customer id '{payload.context.active_customer_id}'."
+    if payload.context and payload.context.customers:
+        names = ", ".join(c.name for c in payload.context.customers[:60])
+        system += f"\nKnown customers: {names}."
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    for turn in payload.history[-12:]:
+        messages.append({"role": turn.role, "content": turn.content})
+    messages.append({"role": "user", "content": payload.message})
+
+    tools = [
+        {"type": "function", "function": {
+            "name": t.name, "description": t.description, "parameters": t.parameters,
+        }}
+        for t in payload.tools
+    ]
+
+    resp = client.chat.completions.create(
+        model=config.OPENAI_MODEL,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+        temperature=0,
+    )
+    # Record token usage + cost for the credits counter (never fail the chat).
+    try:
+        if getattr(resp, "usage", None):
+            usage.record(config.OPENAI_MODEL, resp.usage.prompt_tokens, resp.usage.completion_tokens)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[usage] record failed: {exc}")
+
+    choice = resp.choices[0].message
+    if choice.tool_calls:
+        calls = [
+            ToolCallOut(name=c.function.name, args=json.loads(c.function.arguments or "{}"))
+            for c in choice.tool_calls
+        ]
+        return PlanOut(tool_calls=calls, source="llm")
+    return PlanOut(tool_calls=[], final_text=choice.content or "Ji, batayein main kaise madad karun?", source="llm")
+
+
+# ── Offline fallback planner (no API key) — mirrors the frontend localPlan ────
+def _plan_fallback(message: str) -> PlanOut:
+    text = message.strip()
+    low = text.lower()
+    amt = _parse_amount(low)
+
+    def call(name: str, args: dict[str, Any]) -> PlanOut:
+        return PlanOut(tool_calls=[ToolCallOut(name=name, args=args)], source="fallback")
+
+    if re.search(r"\b(liya|le liya|saman|kharid|bika|sale|becha)\b", low) and amt:
+        cust = _name_before(text, r"ne|ka|ki")
+        if cust:
+            return call("record_sale", {"customer": cust, "amount": amt})
+
+    m = re.search(r"(naya customer|add customer|new customer)\s*[—\-:]?\s*(.+)", low)
+    if m:
+        parts = [p.strip() for p in re.split(r"[,—\-]", text[m.start(2):]) if p.strip()]
+        if parts:
+            ctype = "Hotel / Restaurant" if "hotel" in low else "Household"
+            return call("add_customer", {"name": parts[0].title(),
+                                         "area": parts[1] if len(parts) > 1 else None, "type": ctype})
+
+    # Invoice: "Tariq Hotel ka bill — 50L doodh @ 200, 10kg cheeni @ 300".
+    if re.search(r"\b(bill|invoice)\b", low):
+        cm = re.match(r"\s*(.+?)\s+(?:ka|ki)\s+(?:bill|invoice)", text, re.I)
+        customer = cm.group(1).strip() if cm else None
+        items = [
+            {"name": mm.group(2).strip(), "qty": float(mm.group(1)), "rate": float(mm.group(3))}
+            for mm in re.finditer(r"(\d+(?:\.\d+)?)\s*[a-zA-Z]*\s+([A-Za-z][A-Za-z\s]*?)\s*@\s*(\d+(?:\.\d+)?)", text)
+        ]
+        if customer and items:
+            return call("create_invoice", {"customer": customer, "items": items})
+        if customer:
+            return PlanOut(
+                tool_calls=[],
+                final_text=f'{customer} ka bill banane ke liye har item ka rate bhi likhein, e.g. "50 doodh @ 200".',
+                source="fallback",
+            )
+
+    # Bulk outreach FIRST so "inactive walon ko message" doesn't grab a name.
+    if re.search(r"(sab|bulk|inactive|lapsed|purane|walon)", low) and \
+            re.search(r"(reminder|message|bhej|yaad|offer)", low):
+        return call("bulk_remind", {"filter": "inactive"})
+
+    # Single reminder/outreach: "X ko message likhdo / reminder / yaad dilao".
+    if re.search(r"(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft)", low):
+        cust = _name_before(text, r"ko|ka|ki|ke")
+        if cust:
+            return call("draft_reminder", {"customer": cust})
+
+    # Visit / recency for ONE customer.
+    if re.search(r"(kab aa\w*|last time|aakhri baar|kitne din|visit kab|kab aya)", low):
+        cust = _name_before(text, r"last|kab|kitne|aakhri|ka|ki|ko|ne")
+        if cust:
+            return call("customer_visit", {"customer": cust})
+    # "Which customers haven't come in the last N days" → inactive list.
+    if re.search(r"(nahi aa\w*|nahin aa\w*|inactive|gayab)", low) and \
+            re.search(r"(din|days|customer|grahak|kaun|konsi|konse)", low):
+        dm = re.search(r"(\d+)\s*(din|day)", low)
+        idle = int(dm.group(1)) if dm else 7
+        return call("list_customers", {"filter": "inactive", "idle_days": idle})
+
+    if re.search(r"(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)", low):
+        cust = _name_before(text, r"ke|ka|ki|ko|for")
+        return call("suggest_next_steps", {"customer": cust} if cust else {})
+    if re.search(r"(sab se zyada|sabse zyada|most|best|top).*(business|sale|customer|grahak)|business.*(zyada|most)", low):
+        return call("query_data", {"template": "top_by_sales"})
+    if re.search(r"(business|performance|profile|kaisa|kaisi|analysis|insight|360)", low):
+        cust = _name_before(text, r"ka|ki|ke|kaisa|kaisi")
+        if cust:
+            return call("customer_insight", {"customer": cust})
+    if "sales today" in low or ("aaj" in low and "sale" in low):
+        return call("query_data", {"template": "sales_today"})
+    if low.startswith("open ") or "kholo" in low or "khol" in low:
+        page = re.sub(r"open |kholo|khol", "", low).strip()
+        return call("navigate", {"page": page})
+
+    return PlanOut(
+        tool_calls=[],
+        final_text=("Ji, main sale likh sakti hun, customer add/update kar sakti hun, "
+                    "invoice bana sakti hun, outreach message bhej sakti hun, ya koi page khol sakti hun. Kya karna hai?"),
+        source="fallback",
+    )
+
 SYSTEM_PROMPT = (
     "You are Alara, a Roman-Urdu/English assistant for a Pakistani shopkeeper's "
-    "sales-and-credit (udhar) ledger. Decide if the user wants to record a sale, "
-    "record a payment, add a customer, create an invoice, or query data, and call "
-    "the matching tool with extracted parameters. Never do arithmetic yourself — "
-    "the tools compute everything. Use the earlier conversation turns for context: "
-    "resolve pronouns and follow-ups (e.g. 'usko 500 aur de do', 'same customer', "
-    "'aur ek aur') against the customer/amounts mentioned earlier in the chat. "
-    "If the user is just chatting or the intent is unclear, reply briefly in "
-    "friendly Roman Urdu without calling a tool."
+    "SALES, OUTREACH and CUSTOMER-MANAGEMENT app. There is NO credit/udhar — every "
+    "sale is fully paid. Decide if the user wants to record a sale, add a customer, "
+    "create an invoice, or query data, and call the matching tool with extracted "
+    "parameters. Never do arithmetic yourself — the tools compute everything. Use the "
+    "earlier conversation turns for context: resolve pronouns and follow-ups against "
+    "the customer mentioned earlier in the chat. If the user is just chatting or the "
+    "intent is unclear, reply briefly in friendly Roman Urdu without calling a tool."
 )
 
 TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "record_sale",
-        "description": "Record a sale for a customer (cash, udhar/credit, or partial).",
+        "description": "Record a completed (paid) sale for a customer.",
         "parameters": {"type": "object", "properties": {
             "customer": {"type": "string"},
             "amount": {"type": "number"},
-            "payment_type": {"type": "string", "enum": ["Cash", "Udhar", "Partial"]},
-            "amount_paid": {"type": "number"},
-        }, "required": ["customer", "amount", "payment_type"]}}},
-    {"type": "function", "function": {
-        "name": "record_payment",
-        "description": "Record an udhar (credit) repayment received from a customer.",
-        "parameters": {"type": "object", "properties": {
-            "customer": {"type": "string"}, "amount": {"type": "number"},
         }, "required": ["customer", "amount"]}}},
     {"type": "function", "function": {
         "name": "add_customer",
@@ -76,8 +257,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "query_data",
         "description": "Answer a data question using a fixed template.",
         "parameters": {"type": "object", "properties": {
-            "template": {"type": "string", "enum": [
-                "udhar_recovered", "total_outstanding", "sales_today", "top_defaulters"]},
+            "template": {"type": "string", "enum": ["sales_today", "top_by_sales"]},
             "days": {"type": "integer"},
         }, "required": ["template"]}}},
 ]
@@ -128,10 +308,6 @@ def _handle_with_llm(payload: ChatIn) -> ChatOut:
 def _run(name: str, args: dict[str, Any], source: str) -> ChatOut:
     if name == "record_sale":
         return _preview_record_sale(args, source)
-    if name == "record_payment":
-        res = workflows.record_payment(RecordPaymentIn(**args))
-        return _to_chat(res, "confirmation", source,
-                        action={"customer": args.get("customer"), "amount": args.get("amount")})
     if name == "add_customer":
         return _preview_add_customer(args, source)
     if name == "create_invoice":
@@ -156,13 +332,7 @@ def _preview_record_sale(args: dict[str, Any], source: str) -> ChatOut:
     if inp.amount <= 0:
         return ChatOut(text="Amount 0 se zyada honi chahiye.", source=source)
 
-    amount_paid = inp.amount if inp.payment_type == "Cash" else (inp.amount_paid or 0)
-    unpaid = 0 if inp.payment_type == "Cash" else max(0, inp.amount - amount_paid)
-    balance_after = cust["balance"] + unpaid
-    text = (
-        f"{cust['name']} ka PKR {int(inp.amount):,} sale draft ready hai. "
-        f"Confirm karein to {'udhar balance update hoga' if unpaid else 'cash sale record hogi'}."
-    )
+    text = f"{cust['name']} ka PKR {int(inp.amount):,} sale draft ready hai. Confirm karein."
     return ChatOut(
         text=text,
         card_type="sale_confirmation",
@@ -170,10 +340,7 @@ def _preview_record_sale(args: dict[str, Any], source: str) -> ChatOut:
             "customer_id": cust["id"],
             "customer_name": cust["name"],
             "amount": inp.amount,
-            "payment_type": inp.payment_type,
-            "amount_paid": amount_paid,
-            "balance_before": cust["balance"],
-            "balance_after": balance_after,
+            "payment_type": "Paid",
             "item_name": "Quick sale",
         },
         action=ChatAction(
@@ -182,8 +349,6 @@ def _preview_record_sale(args: dict[str, Any], source: str) -> ChatOut:
                 "customer": cust["name"],
                 "customer_id": cust["id"],
                 "amount": inp.amount,
-                "payment_type": inp.payment_type,
-                "amount_paid": amount_paid,
             },
         ),
         source=source,
@@ -208,7 +373,6 @@ def _preview_add_customer(args: dict[str, Any], source: str) -> ChatOut:
             "area": inp.area or "",
             "type": inp.type,
             "phone": inp.phone or "",
-            "balance": 0,
             "duplicate": dupe,
         },
         action=ChatAction(
@@ -239,22 +403,14 @@ def _handle_fallback(message: str) -> ChatOut:
     text = message.strip()
     low = text.lower()
 
-    # W2 — payment: "... ne 3000 de diye" / "received / mil gaye / payment"
-    if re.search(r"(de di\w*|de dy\w*|mil ga\w*|received|payment|recover|wapas|jama)", low):
-        amt = _parse_amount(low)
-        cust = _name_before(text, r"ne|se|ka|ki")
-        if amt and cust:
-            return _run("record_payment", {"customer": cust, "amount": amt}, "fallback")
-
-    # W1 — sale: "... ne 1200 ka saman liya udhar/cash"
+    # W1 — sale: "... ne 1200 ka saman liya"
     if re.search(r"\b(liya|le liya|saman|kharid|bika|sale|becha)\b", low):
         amt = _parse_amount(low)
         cust = _name_before(text, r"ne|ka|ki")
         if amt and cust:
-            pt = "Udhar" if "udhar" in low else ("Partial" if "partial" in low else "Cash")
-            return _run("record_sale", {"customer": cust, "amount": amt, "payment_type": pt}, "fallback")
+            return _run("record_sale", {"customer": cust, "amount": amt}, "fallback")
 
-    # W3 — add customer: "naya customer — Imran, Street 9, hotel wala"
+    # W2 — add customer: "naya customer — Imran, Street 9, hotel wala"
     m = re.search(r"(naya customer|add customer|new customer)\s*[—\-:]?\s*(.+)", low)
     if m:
         rest = text[m.start(2):]
@@ -265,22 +421,15 @@ def _handle_fallback(message: str) -> ChatOut:
             ctype = "Hotel / Restaurant" if "hotel" in low else "Household"
             return _run("add_customer", {"name": name, "area": area, "type": ctype}, "fallback")
 
-    # W5 — queries
-    if "recover" in low or ("kitna" in low and "udhar" in low):
-        days = 7
-        if "mahine" in low or "month" in low:
-            days = 30
-        return _run("query_data", {"template": "udhar_recovered", "days": days}, "fallback")
-    if "outstanding" in low or "total udhar" in low or "kitna udhar" in low:
-        return _run("query_data", {"template": "total_outstanding"}, "fallback")
-    if "aaj" in low and "sale" in low or "sales today" in low:
+    # W4 — queries
+    if ("aaj" in low and "sale" in low) or "sales today" in low:
         return _run("query_data", {"template": "sales_today"}, "fallback")
-    if "defaulter" in low or "sab se zyada" in low:
-        return _run("query_data", {"template": "top_defaulters"}, "fallback")
+    if "sab se zyada" in low or "most business" in low or "best customer" in low:
+        return _run("query_data", {"template": "top_by_sales"}, "fallback")
 
     return ChatOut(
-        text=("Ji, main sale ya payment likh sakta hun, customer add kar sakta hun, "
-              "invoice bana sakta hun, ya udhar/sales ke sawal ka jawab de sakta hun. "
+        text=("Ji, main sale likh sakta hun, customer add kar sakta hun, "
+              "invoice bana sakta hun, ya sales/customer ke sawal ka jawab de sakta hun. "
               "Kya karna hai?"),
         source="fallback",
     )

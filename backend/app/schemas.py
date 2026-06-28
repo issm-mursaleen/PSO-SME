@@ -22,13 +22,6 @@ class WorkflowResult(BaseModel):
 class RecordSaleIn(BaseModel):
     customer: str
     amount: float
-    payment_type: Literal["Cash", "Udhar", "Partial"] = "Cash"
-    amount_paid: float | None = None
-
-
-class RecordPaymentIn(BaseModel):
-    customer: str
-    amount: float
 
 
 class AddCustomerIn(BaseModel):
@@ -50,9 +43,7 @@ class CreateInvoiceIn(BaseModel):
 
 
 class QueryIn(BaseModel):
-    template: Literal[
-        "udhar_recovered", "total_outstanding", "sales_today", "top_defaulters"
-    ]
+    template: Literal["sales_today", "top_by_sales"]
     days: int = 7
 
 
@@ -66,9 +57,7 @@ class CustomerCtx(BaseModel):
     type: str = "Household"
     channel: str = "WhatsApp"
     neighborhood: str = ""
-    creditLimit: float = 0
-    balance: float = 0
-    healthScore: int = 70
+    status: str = "Active"
     lastVisitDays: int = 0
 
 
@@ -104,4 +93,33 @@ class ChatOut(BaseModel):
     ] = None
     card_data: Optional[dict[str, Any]] = None
     action: Optional[ChatAction] = None
+    source: Literal["llm", "fallback"] = "fallback"
+
+
+# ── Agentic planner (stateless) ──────────────────────────────────────────────
+class ToolSchemaIn(BaseModel):
+    """A tool the frontend exposes. The frontend owns the registry and sends the
+    catalog with every request, so the backend has no hardcoded tool list."""
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ToolCallOut(BaseModel):
+    name: str
+    args: dict[str, Any] = {}
+
+
+class PlanIn(BaseModel):
+    message: str
+    tools: list[ToolSchemaIn] = []
+    context: ChatContext = ChatContext()
+    history: list[ChatHistoryMessage] = []
+
+
+class PlanOut(BaseModel):
+    """The planner only selects tools + extracts params; it never mutates state
+    or does arithmetic. The frontend executes the calls against its own store."""
+    tool_calls: list[ToolCallOut] = []
+    final_text: Optional[str] = None
     source: Literal["llm", "fallback"] = "fallback"

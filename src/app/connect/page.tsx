@@ -2,27 +2,25 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { useApp, type ConnectQueueItem } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
-import receiptBackground from '@/assets/payment-receipt-placeholder.png';
 
 const PREBUILT_DRAFTS = [
   {
-    id: 'balance-reminder',
-    label: 'Balance reminder',
+    id: 'check-in',
+    label: 'Friendly check-in',
     channel: 'WhatsApp' as const,
-    text: 'Salam, aap ka udhar balance baqi hai. Baraye meherbani apni sahulat ke mutabiq payment confirm kar dein. Shukriya.',
+    text: 'Salam, kaafi din se mulaqat nahi hui. Hum aap ko miss kar rahe hain — zaroor tashreef laaiye. Shukriya.',
   },
   {
-    id: 'payment-receipt',
-    label: 'Payment receipt',
+    id: 'winback-offer',
+    label: 'Win-back offer',
     channel: 'WhatsApp' as const,
-    text: 'Salam, aap ki payment receive ho gayi hai. Updated khata balance aur receipt yahan confirm kar di gayi hai. Shukriya.',
+    text: 'Salam, sirf aap ke liye khaas offer rakhi hai aap ke pasandeeda items par. Aaj hi visit karein. Shukriya.',
   },
   {
     id: 'stock-offer',
-    label: 'Stock offer',
+    label: 'New arrivals',
     channel: 'WhatsApp' as const,
     text: 'Salam, aaj fresh stock aur special trade offer available hai. Agar aap ko items chahiye hon to reply kar dein.',
   },
@@ -34,19 +32,14 @@ const PREBUILT_DRAFTS = [
   },
 ] as const;
 
-const PAYMENT_PROOF_REPLIES = [
-  { customerId: 'cust-riaz', amount: 'PKR 5,000', date: '26 Jun 2026 · 11:42 AM', note: 'Payment sent. Screenshot attached for confirmation.' },
-  { customerId: 'cust-iqbal', amount: 'PKR 2,500', date: '25 Jun 2026 · 04:18 PM', note: 'EasyPaisa transfer complete. Please update my khata.' },
-] as const;
-
 export default function CustomerConnect() {
   const {
     customers,
     connectQueue,
     commLogs,
+    invoices,
     sendWhatsAppReminder,
     recordCustomerReply,
-    recordPayment,
   } = useApp();
 
   // NOTE: URL params (?customer=&draft=) are read in an effect AFTER mount, not
@@ -102,10 +95,6 @@ export default function CustomerConnect() {
   // Custom theme option (Visual mode)
   const [darkConsoleMode, setDarkConsoleMode] = useState(false);
 
-  // Repayment form modal inside context pane
-  const [showRepaymentForm, setShowRepaymentForm] = useState(false);
-  const [repaymentAmount, setRepaymentAmount] = useState('');
-
   // Toast message state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
@@ -117,6 +106,17 @@ export default function CustomerConnect() {
     if (!activeQueueItem) return null;
     return customers.find((c) => c.id === activeQueueItem.customerId) || null;
   }, [customers, activeQueueItem]);
+
+  // Engagement + sales metrics for the active customer (recency + real invoices).
+  const activeEngagement = activeCustomer
+    ? Math.max(0, Math.min(100, 100 - activeCustomer.lastVisitDays * 5))
+    : 0;
+  const activeCustomerInvoices = useMemo(
+    () => (activeCustomer ? invoices.filter((i) => i.customerId === activeCustomer.id) : []),
+    [activeCustomer, invoices],
+  );
+  const activeLifetimeSales = activeCustomerInvoices.reduce((sum, i) => sum + i.amount, 0);
+  const activeOrderCount = activeCustomerInvoices.length;
 
   // Sync communication mode with customer's default channel
   /* eslint-disable react-hooks/set-state-in-effect -- Channel follows the selected customer's saved outreach preference. */
@@ -177,8 +177,8 @@ export default function CustomerConnect() {
     const lowerText = sentText.toLowerCase();
     let reply = 'Ji, message received. I will confirm shortly.';
 
-    if (lowerText.includes('payment') || lowerText.includes('pending') || lowerText.includes('balance') || lowerText.includes('clear')) {
-      reply = 'Ji, I saw this. I will arrange the payment and update you soon.';
+    if (lowerText.includes('offer') || lowerText.includes('discount') || lowerText.includes('miss')) {
+      reply = 'Ji, offer achi lagi! Main jald visit karunga. Shukriya.';
     } else if (lowerText.includes('delivery') || lowerText.includes('items')) {
       reply = 'Ji, please keep the items ready. I will confirm delivery timing.';
     } else if (lowerText.includes('visit')) {
@@ -227,26 +227,6 @@ export default function CustomerConnect() {
     setDashboardDraft(draft.text);
     setDraftChannel(draft.channel);
     triggerToast(`${draft.label} loaded for review.`, 'info');
-  };
-
-  const paymentProofReply = activeCustomer
-    ? PAYMENT_PROOF_REPLIES.find((reply) => reply.customerId === activeCustomer.id)
-    : undefined;
-
-  // Log Repayment from Side Panel
-  const handleLogRepayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!repaymentAmount || !activeCustomer) return;
-    const amt = parseFloat(repaymentAmount);
-    if (isNaN(amt) || amt <= 0) {
-      triggerToast('Invalid cash amount.', 'error');
-      return;
-    }
-
-    recordPayment(activeCustomer.id, amt);
-    setRepaymentAmount('');
-    setShowRepaymentForm(false);
-    triggerToast(`Logged repayment of PKR ${amt.toLocaleString()} for ${activeCustomer.name}!`, 'success');
   };
 
   return (
@@ -507,42 +487,9 @@ export default function CustomerConnect() {
               </span>
             </div>
 
-            {paymentProofReply && (
-              <div className="flex justify-start animate-fade-in">
-                <div className="max-w-[75%] space-y-1 sm:max-w-[65%]">
-                  <div className={`rounded-2xl rounded-tl-none border p-3 shadow-sm ${darkConsoleMode ? 'border-stone-700 bg-stone-800' : 'border-emerald-200 bg-white'}`}>
-                    <div className="mb-2 flex items-center gap-1.5 text-[8px] font-bold uppercase tracking-wider text-emerald-700">
-                      <Icon name="chat" size={10} /> WhatsApp · customer reply
-                    </div>
-                    <p className="mb-2 text-[12px] leading-relaxed">{paymentProofReply.note}</p>
-                    <div className="relative h-44 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50">
-                      <Image
-                        src={receiptBackground}
-                        alt="EasyPaisa-style payment receipt attachment"
-                        fill
-                        className="object-cover opacity-30"
-                        sizes="(max-width: 640px) 75vw, 320px"
-                      />
-                      <div className="relative flex h-full flex-col justify-between p-3 text-emerald-950">
-                        <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-wider">
-                          <span>EasyPaisa receipt</span>
-                          <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-white">Paid</span>
-                        </div>
-                        <div>
-                          <p className="font-mono text-xl font-extrabold tracking-tight">{paymentProofReply.amount}</p>
-                          <p className="mt-1 text-[10px] font-semibold">{paymentProofReply.date}</p>
-                          <p className="mt-1 text-[9px] text-emerald-800">Payment confirmation attached via WhatsApp</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
             {activeLogs.length === 0 ? (
               <p className="text-xs opacity-60 italic text-center py-8">
-                No past logs recorded for this client. Utilize quick templates to initiate payment outreach.
+                No past logs recorded for this client. Utilize quick templates to initiate customer outreach.
               </p>
             ) : (
               activeLogs.map((log) => {
@@ -711,7 +658,7 @@ export default function CustomerConnect() {
                     type="button"
                     onClick={() =>
                       handleQuickTemplate(
-                        `Salam ${activeCustomer.name} sahib, this is a reminder from PSO SME. Your pending credit balance is PKR ${activeCustomer.balance.toLocaleString()}. Kindly clear this balance today. Shukriya.`
+                        `Salam ${activeCustomer.name} sahib, kaafi din se mulaqat nahi hui. Hum aap ko miss kar rahe hain — aaj kuch khaas offers bhi hain. Zaroor tashreef laaiye. Shukriya.`
                       )
                     }
                     className={`border rounded px-3 py-1.5 font-bold transition-all active:scale-95 flex items-center gap-1 ${
@@ -720,8 +667,8 @@ export default function CustomerConnect() {
                         : 'bg-surface-container hover:bg-surface-container-high border-outline-variant text-primary'
                     }`}
                   >
-                    <Icon name="payments" size={12} />
-                    Send Balance Due Reminder
+                    <Icon name="campaign" size={12} />
+                    Send Check-in Message
                   </button>
                   <button
                     type="button"
@@ -829,10 +776,10 @@ export default function CustomerConnect() {
           darkConsoleMode ? 'border-[#292524] bg-[#1c1917]' : 'border-outline-variant/60 bg-surface-container-lowest'
         }`}>
           
-          {/* Dynamic Credit Risk Gauge using Circular SVG */}
+          {/* Engagement gauge using Circular SVG */}
           <div className="text-center border-b pb-4 flex flex-col items-center border-stone-100/10">
-            <h4 className="text-[10px] opacity-75 font-bold uppercase tracking-wider text-left w-full mb-3">Credit Risk Health</h4>
-            
+            <h4 className="text-[10px] opacity-75 font-bold uppercase tracking-wider text-left w-full mb-3">Engagement</h4>
+
             <div className="relative flex items-center justify-center my-1.5">
               {/* Circular SVG representation */}
               <svg className="w-24 h-24 transform -rotate-90">
@@ -849,121 +796,66 @@ export default function CustomerConnect() {
                   cy="48"
                   r="38"
                   stroke={
-                    activeCustomer.healthScore > 80 
-                      ? '#4caf79' 
-                      : activeCustomer.healthScore > 50 
-                      ? '#f59e0b' 
+                    activeEngagement > 80
+                      ? '#4caf79'
+                      : activeEngagement > 50
+                      ? '#f59e0b'
                       : '#ef4444'
                   }
                   strokeWidth="8"
                   fill="transparent"
                   strokeDasharray="238.76"
-                  strokeDashoffset={238.76 - (238.76 * activeCustomer.healthScore) / 100}
+                  strokeDashoffset={238.76 - (238.76 * activeEngagement) / 100}
                   strokeLinecap="round"
                   className="transition-all duration-1000 ease-out"
                 />
               </svg>
               {/* Score text absolute overlay */}
               <div className="absolute flex flex-col items-center">
-                <span className="font-extrabold text-[18px] font-mono leading-none">{activeCustomer.healthScore}%</span>
-                <span className="text-[7px] opacity-60 font-bold uppercase tracking-widest mt-0.5">Rating</span>
+                <span className="font-extrabold text-[18px] font-mono leading-none">{activeEngagement}%</span>
+                <span className="text-[7px] opacity-60 font-bold uppercase tracking-widest mt-0.5">Engaged</span>
               </div>
             </div>
 
             <p className="text-[11px] font-bold mt-2">
-              {activeCustomer.healthScore > 80 
-                ? 'Low risk / Good creditor' 
-                : activeCustomer.healthScore > 50 
-                ? 'Warning risk category' 
-                : 'High risk credit breach'}
+              {activeEngagement > 80
+                ? 'Highly engaged customer'
+                : activeEngagement > 50
+                ? 'Cooling off — check in'
+                : 'Lapsed — re-engage now'}
             </p>
           </div>
 
-          {/* Customer Financial Profile */}
+          {/* Customer Sales Profile */}
           <div className="space-y-3">
-            <h4 className="text-[10px] opacity-75 font-bold uppercase tracking-wider">Ledger Balance Summary</h4>
+            <h4 className="text-[10px] opacity-75 font-bold uppercase tracking-wider">Sales Summary</h4>
             <div className={`p-3.5 rounded-xl border space-y-2.5 text-xs ${
               darkConsoleMode ? 'bg-[#1c1917] border-stone-700/80' : 'bg-surface-container-low border-outline-variant/30'
             }`}>
               <div className="flex justify-between py-0.5">
-                <span className="opacity-75">Outstanding Balance:</span>
-                <span className="font-bold text-tertiary">PKR {activeCustomer.balance.toLocaleString()}</span>
+                <span className="opacity-75">Lifetime Sales:</span>
+                <span className="font-bold text-primary">PKR {activeLifetimeSales.toLocaleString()}</span>
               </div>
               <div className="flex justify-between py-0.5">
-                <span className="opacity-75">Credit Limit Status:</span>
-                <span className="font-bold font-mono text-[11px]">PKR {activeCustomer.creditLimit.toLocaleString()}</span>
+                <span className="opacity-75">Orders:</span>
+                <span className="font-bold font-mono text-[11px]">{activeOrderCount}</span>
               </div>
               <div className="flex justify-between py-0.5">
-                <span className="opacity-75">Overdue Days Counter:</span>
-                <span className="font-extrabold text-red-500">{activeCustomer.lastVisitDays} days overdue</span>
-              </div>
-
-              {/* Progress bar comparison */}
-              <div className="pt-1.5">
-                <div className="flex justify-between text-[8px] opacity-60 font-bold mb-1">
-                  <span>Credit Utilized</span>
-                  <span>{Math.round((activeCustomer.balance / (activeCustomer.creditLimit || 1)) * 100)}%</span>
-                </div>
-                <div className="w-full bg-stone-300/40 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${
-                      activeCustomer.balance > activeCustomer.creditLimit ? 'bg-red-500' : 'bg-primary'
-                    }`}
-                    style={{ width: `${Math.min(100, (activeCustomer.balance / (activeCustomer.creditLimit || 1)) * 100)}%` }}
-                  />
-                </div>
+                <span className="opacity-75">Last Visit:</span>
+                <span className="font-extrabold">{activeCustomer.lastVisitDays} days ago</span>
               </div>
             </div>
           </div>
 
-          {/* Interactive Cash Repayment Panel */}
+          {/* Quick outreach action */}
           <div className="border-t border-stone-100/10 pt-4">
-            {showRepaymentForm ? (
-              <form onSubmit={handleLogRepayment} className={`p-3 rounded-xl border space-y-2.5 anim-subtle-fade ${
-                darkConsoleMode ? 'bg-[#231f1c] border-stone-800' : 'bg-surface-container-low border-outline-variant/40'
-              }`}>
-                <p className="text-[10px] font-bold text-primary">Log Repayment Cash Amount</p>
-                <div className="relative">
-                  <input
-                    required
-                    type="number"
-                    placeholder="Enter PKR amount..."
-                    value={repaymentAmount}
-                    onChange={(e) => setRepaymentAmount(e.target.value)}
-                    className="w-full text-xs p-2 pr-9 border rounded-lg bg-white text-stone-900 border-outline outline-none"
-                  />
-                  <span className="absolute right-2.5 top-2 text-[9px] font-bold text-stone-500 font-mono">PKR</span>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    className="flex-1 bg-primary text-white font-bold py-1.5 rounded-lg text-[10px] hover:opacity-90 active:scale-95"
-                  >
-                    Log Payment
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowRepaymentForm(false)}
-                    className="px-2.5 py-1.5 border border-stone-300 hover:bg-stone-200/50 rounded-lg text-[10px] text-stone-700 dark:text-stone-300"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <button
-                disabled={activeCustomer.balance <= 0}
-                onClick={() => setShowRepaymentForm(true)}
-                className={`w-full py-2.5 rounded-xl border font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-sm ${
-                  activeCustomer.balance <= 0
-                    ? 'border-stone-300 text-stone-400 bg-stone-100 cursor-not-allowed dark:bg-stone-800 dark:border-stone-700/50'
-                    : 'bg-primary text-white hover:opacity-95 hover:shadow-lg active:scale-95'
-                }`}
-              >
-                <Icon name="payments" size={15} />
-                Log Cash Collection
-              </button>
-            )}
+            <Link
+              href={`/record-sale?customer=${activeCustomer.id}`}
+              className="w-full py-2.5 rounded-xl border font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-sm bg-primary text-white hover:opacity-95 hover:shadow-lg active:scale-95"
+            >
+              <Icon name="add_shopping_cart" size={15} />
+              Record a Sale
+            </Link>
           </div>
 
           {/* Product Purchasing Habits */}

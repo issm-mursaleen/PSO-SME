@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 48" width="96" height="48" shape-rendering="crispEdges">
+  <defs>
+    <pattern id="floorTile" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="4" fill="#ffffff" />
+      <rect width="2" height="2" fill="#dee2e6" />
+      <rect x="2" y="2" width="2" height="2" fill="#dee2e6" />
+    </pattern>
+  </defs>
+
+  <!-- Backdrop -->
+  <rect x="0" y="0" width="96" height="48" fill="#ffffff" />
+
+  <!-- Distant silhouettes -->
+  <rect x="4" y="3" width="6" height="6" fill="#dee2e6" />
+  <rect x="13" y="2" width="5" height="7" fill="#dee2e6" />
+  <rect x="40" y="3" width="7" height="6" fill="#dee2e6" />
+  <rect x="62" y="2" width="6" height="7" fill="#dee2e6" />
+  <rect x="80" y="3" width="6" height="6" fill="#dee2e6" />
+  <rect x="6" y="5" width="1" height="1" fill="#adb5bd" />
+  <rect x="15" y="4" width="1" height="1" fill="#adb5bd" />
+  <rect x="43" y="5" width="1" height="1" fill="#adb5bd" />
+  <rect x="64" y="4" width="1" height="1" fill="#adb5bd" />
+  <rect x="82" y="5" width="1" height="1" fill="#adb5bd" />
+
+  <!-- Continuous checkered pavement -->
+  <rect x="0" y="38" width="96" height="10" fill="url(#floorTile)" />
+  <rect x="0" y="38" width="96" height="1" fill="#adb5bd" />
+
+  <!-- ░░ STALL — GRAINS ░░ -->
+  <rect x="4" y="14" width="1" height="24" fill="#212529" />
+  <rect x="23" y="14" width="1" height="24" fill="#212529" />
+  <rect x="3" y="9" width="22" height="5" fill="#000000" />
+  <rect x="3" y="9" width="4" height="5" fill="#ffffff" />
+  <rect x="11" y="9" width="4" height="5" fill="#ffffff" />
+  <rect x="19" y="9" width="4" height="5" fill="#ffffff" />
+  <rect x="3" y="14" width="22" height="1" fill="#212529" />
+  <text x="14" y="12.6" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="3.2" fill="#000000">GRAINS</text>
+  <rect x="5" y="33" width="18" height="5" fill="#6c757d" />
+  <rect x="5" y="33" width="18" height="1" fill="#212529" />
+  <rect x="6" y="28" width="4" height="5" fill="#adb5bd" />
+  <rect x="6" y="31" width="4" height="2" fill="#495057" />
+  <rect x="11" y="27" width="4" height="6" fill="#adb5bd" />
+  <rect x="11" y="31" width="4" height="2" fill="#495057" />
+  <rect x="16" y="28" width="4" height="5" fill="#adb5bd" />
+  <rect x="16" y="31" width="4" height="2" fill="#495057" />
+  <rect x="7" y="29" width="1" height="1" fill="#ffffff" />
+  <rect x="12" y="28" width="1" height="1" fill="#ffffff" />
+  <rect x="17" y="29" width="1" height="1" fill="#ffffff" />
+
+  <!-- Crates between stalls -->
+  <rect x="28" y="33" width="4" height="5" fill="#212529" />
+  <rect x="29" y="34.5" width="2" height="2" fill="#6c757d" />
+  <rect x="34" y="32" width="4" height="6" fill="#343a40" />
+  <rect x="35" y="33.5" width="2" height="2.5" fill="#adb5bd" />
+
+  <!-- ░░ STALL — SPICES ░░ -->
+  <rect x="40" y="14" width="1" height="24" fill="#212529" />
+  <rect x="59" y="14" width="1" height="24" fill="#212529" />
+  <rect x="39" y="9" width="22" height="5" fill="#343a40" />
+  <rect x="39" y="9" width="4" height="5" fill="#dee2e6" />
+  <rect x="47" y="9" width="4" height="5" fill="#dee2e6" />
+  <rect x="55" y="9" width="4" height="5" fill="#dee2e6" />
+  <rect x="39" y="14" width="22" height="1" fill="#212529" />
+  <text x="50" y="12.6" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="3.2" fill="#000000">SPICES</text>
+  <rect x="41" y="33" width="18" height="5" fill="#495057" />
+  <rect x="41" y="33" width="18" height="1" fill="#adb5bd" />
+  <rect x="43" y="27" width="3" height="6" fill="#ffffff" />
+  <rect x="43" y="27" width="3" height="1" fill="#212529" />
+  <rect x="43.8" y="29" width="1.4" height="3" fill="#6c757d" />
+  <rect x="48" y="25" width="3" height="8" fill="#ffffff" />
+  <rect x="48" y="25" width="3" height="1" fill="#212529" />
+  <rect x="48.8" y="27" width="1.4" height="5" fill="#adb5bd" />
+  <rect x="53" y="27" width="3" height="6" fill="#ffffff" />
+  <rect x="53" y="27" width="3" height="1" fill="#212529" />
+  <rect x="53.8" y="29" width="1.4" height="3" fill="#000000" />
+  <!-- small hanging sign -->
+  <rect x="46" y="16" width="8" height="3" fill="#ffffff" stroke="#000000" stroke-width="0.5" />
+
+  <!-- Crates between stalls -->
+  <rect x="63" y="32" width="3" height="6" fill="#212529" />
+  <rect x="64" y="33.5" width="1.4" height="3" fill="#6c757d" />
+
+  <!-- ░░ GENERAL STORE ░░ -->
+  <rect x="69" y="13" width="1" height="25" fill="#212529" />
+  <rect x="91" y="13" width="1" height="25" fill="#212529" />
+  <rect x="68" y="8" width="24" height="5" fill="#000000" />
+  <rect x="68" y="8" width="4" height="5" fill="#ffffff" />
+  <rect x="76" y="8" width="4" height="5" fill="#ffffff" />
+  <rect x="84" y="8" width="4" height="5" fill="#ffffff" />
+  <rect x="68" y="13" width="24" height="1" fill="#212529" />
+  <text x="80" y="11.6" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="2.4" fill="#000000">GENERAL STORE</text>
+  <rect x="70" y="33" width="20" height="5" fill="#6c757d" />
+  <rect x="70" y="33" width="20" height="1" fill="#212529" />
+  <rect x="71" y="19" width="19" height="1" fill="#495057" />
+  <rect x="71" y="24" width="19" height="1" fill="#495057" />
+  <rect x="71" y="29" width="19" height="1" fill="#495057" />
+  <rect x="72" y="20" width="2" height="4" fill="#343a40" />
+  <rect x="75" y="20" width="2" height="4" fill="#000000" />
+  <rect x="78" y="20" width="2" height="4" fill="#343a40" />
+  <rect x="81" y="20" width="2" height="4" fill="#adb5bd" />
+  <rect x="84" y="20" width="2" height="4" fill="#000000" />
+  <rect x="87" y="20" width="2" height="4" fill="#343a40" />
+  <rect x="72" y="25" width="3" height="4" fill="#dee2e6" />
+  <rect x="77" y="25" width="3" height="4" fill="#adb5bd" />
+  <rect x="82" y="25" width="3" height="4" fill="#dee2e6" />
+  <rect x="87" y="25" width="3" height="4" fill="#adb5bd" />
+
+  <!-- Loose box at far right (decorative) -->
+  <rect x="93" y="34" width="3" height="4" fill="#495057" />
+</svg>

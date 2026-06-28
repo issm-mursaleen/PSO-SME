@@ -23,12 +23,11 @@ backend/
 ## Workflows
 | | Workflow | REST | Chat phrase (example) |
 |---|---|---|---|
-| W1 | Record sale | `POST /api/workflows/record-sale` | "Nadeem ne 1200 ka saman liya, udhar" |
-| W2 | Record payment | `POST /api/workflows/record-payment` | "Sana Bibi ne 3000 de diye" |
-| W3 | Add customer | `POST /api/workflows/add-customer` | "naya customer — Imran, Saddar, hotel wala" |
-| W4 | Generate invoice | `POST /api/workflows/create-invoice` | "Tariq ka bill — 50 doodh @ 200, 10 cheeni @ 300" |
-| W5 | Query data | `POST /api/workflows/query` | "pichle hafte kitna udhar recover hua?" |
-| W6 | Alerts & outreach | `GET /api/alerts` | (rules engine; surfaces drafts) |
+| W1 | Record sale | `POST /api/workflows/record-sale` | "Nadeem ne 1200 ka saman liya" |
+| W2 | Add customer | `POST /api/workflows/add-customer` | "naya customer — Imran, Saddar, hotel wala" |
+| W3 | Generate invoice | `POST /api/workflows/create-invoice` | "Tariq ka bill — 50 doodh @ 200, 10 cheeni @ 300" |
+| W4 | Query data | `POST /api/workflows/query` | "sab se zyada business kis ka hai?" |
+| W5 | Alerts & outreach | `GET /api/alerts` | (rules engine; surfaces outreach drafts) |
 
 Chat entry point: `POST /api/chat` → `{ text, card_type, card_data, action, source }`.
 `source` is `"llm"` when an OpenAI key is set, else `"fallback"` (offline parser).

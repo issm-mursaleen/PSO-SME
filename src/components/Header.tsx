@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Search, Bell, Settings, Plus, Calendar, User } from 'lucide-react';
@@ -10,12 +10,17 @@ export const Header: React.FC = () => {
   const router = useRouter();
   const { notifications } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
+  const [todayStr, setTodayStr] = useState<string | null>(null);
 
-  const todayStr = new Date().toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  useEffect(() => {
+    setTodayStr(
+      new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }),
+    );
+  }, []);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,7 +57,7 @@ export const Header: React.FC = () => {
 
         <button className="hidden md:inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-outline-variant bg-card text-muted-foreground text-xs font-medium hover:bg-muted transition-colors">
           <Calendar className="size-3.5" />
-          {todayStr}
+          {todayStr ?? ' '}
         </button>
 
         <div className="w-px h-5 bg-outline-variant mx-1" />
