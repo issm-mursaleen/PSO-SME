@@ -30,9 +30,9 @@ export const Header: React.FC = () => {
   };
 
   return (
-    <header className="fixed top-0 right-0 left-[208px] z-40 h-[52px] flex items-center gap-4 px-5 bg-card border-b border-outline-variant">
+    <header className="fixed top-0 right-0 left-16 z-40 h-[52px] flex items-center gap-4 px-5 bg-card border-b border-outline-variant">
       {/* Search */}
-      <form onSubmit={handleSearchSubmit} className="flex-1 max-w-xl">
+      <form onSubmit={handleSearchSubmit} className="flex-1 max-w-144">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <input

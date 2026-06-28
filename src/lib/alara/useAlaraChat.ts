@@ -272,6 +272,34 @@ export function useAlaraChat() {
     [chatThreads],
   );
 
+  const deleteChatThread = useCallback(
+    (threadId: string) => {
+      setChatThreads((prev) => {
+        const remaining = prev.filter((t) => t.id !== threadId);
+        if (remaining.length === 0) {
+          const now = Date.now();
+          const welcomeThread: ChatThread = {
+            id: 'chat-demo',
+            title: 'New chat',
+            messages: [WELCOME],
+            createdAt: now,
+            updatedAt: now,
+          };
+          setActiveChatId(welcomeThread.id);
+          setChatMessages([WELCOME]);
+          return [welcomeThread];
+        }
+        if (threadId === activeChatId) {
+          const nextActive = remaining[0];
+          setActiveChatId(nextActive.id);
+          setChatMessages(nextActive.messages);
+        }
+        return remaining;
+      });
+    },
+    [activeChatId],
+  );
+
   return {
     chatMessages,
     chatThreads,
@@ -283,6 +311,7 @@ export function useAlaraChat() {
     pickCandidate,
     startNewChat,
     selectChatThread,
+    deleteChatThread,
   };
 }
 

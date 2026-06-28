@@ -1,6 +1,7 @@
 'use client';
 
-import { Plus, MessageSquare, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, MessageSquare, Sparkles, MoreVertical, Trash2 } from 'lucide-react';
 import type { ChatThread } from '@/lib/alara/types';
 
 // Manual 12-hour formatter — avoids toLocaleTimeString, whose resolved locale
@@ -20,12 +21,23 @@ export function HistorySidebar({
   activeChatId,
   onNew,
   onSelect,
+  onDelete,
 }: {
   threads: ChatThread[];
   activeChatId: string;
   onNew: () => void;
   onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleOutsideClick = () => setOpenMenuId(null);
+    window.addEventListener('click', handleOutsideClick);
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, []);
+
   return (
     <div className="hidden md:flex w-[250px] shrink-0 flex-col border-r border-outline-variant bg-card">
       <div className="p-4 border-b border-outline-variant flex items-center justify-between">
@@ -50,24 +62,63 @@ export function HistorySidebar({
             .sort((a, b) => b.updatedAt - a.updatedAt)
             .map((thread) => {
               const isActive = thread.id === activeChatId;
+              const isMenuOpen = openMenuId === thread.id;
               return (
-                <button
+                <div
                   key={thread.id}
                   onClick={() => onSelect(thread.id)}
-                  className={`w-full text-left p-3 rounded-sm border text-xs flex flex-col gap-1.5 transition-colors ${
+                  className={`group/thread relative w-full text-left p-3 rounded-sm border text-xs flex flex-col gap-1.5 transition-colors cursor-pointer select-none ${
                     isActive
                       ? 'border-foreground bg-muted/40 text-foreground'
                       : 'border-outline-variant bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
                   }`}
                 >
-                  <p className="font-semibold truncate text-foreground/90">{thread.title}</p>
+                  <div className="flex items-start justify-between gap-2 pr-6">
+                    <p className="font-semibold truncate text-foreground/90">{thread.title}</p>
+                  </div>
+
+                  {/* Options Menu */}
+                  <div className="absolute top-2.5 right-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuId(isMenuOpen ? null : thread.id);
+                      }}
+                      className={`p-1 rounded-sm hover:bg-muted-foreground/10 text-muted-foreground hover:text-foreground transition-all ${
+                        isMenuOpen ? 'opacity-100 bg-muted-foreground/10' : 'opacity-0 group-hover/thread:opacity-100 focus-within:opacity-100'
+                      }`}
+                      title="Chat options"
+                    >
+                      <MoreVertical className="size-3.5" />
+                    </button>
+
+                    {isMenuOpen && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute right-0 mt-1 w-28 bg-card border border-outline-variant rounded shadow-lg z-10 py-1 animate-fade-in"
+                      >
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(thread.id);
+                            setOpenMenuId(null);
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 text-[11px] text-danger hover:bg-danger/10 flex items-center gap-1.5 font-medium transition-colors"
+                        >
+                          <Trash2 className="size-3" />
+                          Delete Chat
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex items-center justify-between font-mono text-[9px] text-muted-foreground mt-0.5">
                     <span>{formatTime(thread.updatedAt)}</span>
                     <span className="bg-muted px-1.5 py-0.5 rounded-sm border border-outline-variant/40 text-foreground font-bold">
                       {thread.messages.length} msg{thread.messages.length !== 1 && 's'}
                     </span>
                   </div>
-                </button>
+                </div>
               );
             })
         )}

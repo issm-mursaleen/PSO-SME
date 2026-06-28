@@ -18,6 +18,7 @@ interface BillableDoc {
   date: string;
   amount: number;
   discount: number;
+  status: 'Draft' | 'Paid';
   items: InvoiceItem[];
   notes: string;
 }
@@ -30,6 +31,7 @@ const fromCustomerInvoice = (inv: Invoice): BillableDoc => ({
   date: inv.date,
   amount: inv.amount,
   discount: inv.discount,
+  status: 'Paid',
   items: inv.items,
   notes: inv.notes,
 });
@@ -38,10 +40,11 @@ const fromSupplierInvoice = (inv: SupplierInvoice): BillableDoc => ({
   id: inv.id,
   partyLabel: 'PURCHASED FROM',
   partyName: inv.supplierName,
-  partyHref: '/inventory?tab=suppliers',
+  partyHref: `/inventory/suppliers/${inv.supplierId}`,
   date: inv.date,
   amount: inv.amount,
   discount: inv.discount,
+  status: inv.status,
   items: inv.items,
   notes: inv.notes,
 });
@@ -113,7 +116,7 @@ const buildDocHtml = (doc: BillableDoc) => {
     <section class="bill">
       <p class="muted strong">${doc.partyLabel}</p>
       <p class="strong">${escapeHtml(doc.partyName)}</p>
-      <p class="muted">Status: Paid</p>
+      <p class="muted">Status: ${escapeHtml(doc.status)}</p>
     </section>
     <table>
       <thead>
@@ -318,6 +321,7 @@ function InvoicesListContent() {
                 <th className="px-md py-sm">Invoice ID</th>
                 <th className="px-md py-sm">{activeTab === 'customers' ? 'Customer' : 'Supplier'}</th>
                 <th className="px-md py-sm">Billing Date</th>
+                {activeTab === 'suppliers' && <th className="px-md py-sm">Status</th>}
                 <th className="px-md py-sm">Grand Total</th>
                 <th className="px-md py-sm text-right">Actions</th>
               </tr>
@@ -325,7 +329,7 @@ function InvoicesListContent() {
             <tbody className="divide-y divide-outline-variant text-body-md">
               {visibleDocs.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-md py-8 text-center text-on-surface-variant italic">
+                  <td colSpan={activeTab === 'suppliers' ? 6 : 5} className="px-md py-8 text-center text-on-surface-variant italic">
                     No invoices match the search.
                   </td>
                 </tr>
@@ -343,6 +347,15 @@ function InvoicesListContent() {
                       )}
                     </td>
                     <td className="px-md py-md font-numeric-data text-on-surface-variant">{doc.date}</td>
+                    {activeTab === 'suppliers' && (
+                      <td className="px-md py-md">
+                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          doc.status === 'Paid' ? 'bg-primary-fixed text-on-primary-fixed-variant' : 'bg-secondary-container text-on-secondary-container'
+                        }`}>
+                          {doc.status}
+                        </span>
+                      </td>
+                    )}
                     <td className="px-md py-md font-numeric-data font-bold">PKR {doc.amount.toLocaleString()}</td>
                     <td className="px-md py-md text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -402,7 +415,7 @@ function InvoicesListContent() {
                 <div className="text-[11px]">
                   <p className="font-bold text-on-surface-variant uppercase tracking-wider text-[9px] mb-1">{previewDoc.partyLabel}:</p>
                   <p className="font-bold text-on-surface text-xs">{previewDoc.partyName}</p>
-                  <p className="text-on-surface-variant">Status: Paid</p>
+                  <p className="text-on-surface-variant">Status: {previewDoc.status}</p>
                 </div>
 
                 <div className="border border-outline-variant rounded-lg overflow-hidden">
@@ -454,7 +467,7 @@ function InvoicesListContent() {
                     href={previewDoc.partyHref}
                     className="inline-flex items-center justify-center h-10 px-4 rounded-lg border border-outline-variant text-xs font-bold text-on-surface-variant hover:bg-muted transition-colors"
                   >
-                    {previewDoc.partyLabel === 'PURCHASED FROM' ? 'Suppliers' : 'Customer'}
+                    {previewDoc.partyLabel === 'PURCHASED FROM' ? 'Supplier' : 'Customer'}
                   </Link>
                 )}
               </div>

@@ -16,57 +16,33 @@
   pointer-events: none;
 }
 
-/* Move this container down instead of transforming each image */
+/* Scroll container with repeating background image at native size */
 .marketTrack {
   position: absolute;
   left: 0;
-
-  /* Negative bottom moves the complete market downward */
-  bottom: 0;
-
-  display: flex;
-  align-items: flex-end;
-
-  width: 200%;
-  height: 100%;
-
-  animation: marketScroll 42s linear infinite;
-  will-change: transform;
-  pointer-events: none;
-}
-
-/* Keep the original 2048 × 256 ratio */
-.marketScene {
-  display: block;
-  flex: 0 0 50%;
-
-  width: 50%;
-  height: 100%;
-
-  object-fit: cover;
-  object-position: bottom left;
-
-  /* Do not translate the individual image */
-  transform: translateY(83px);
-
+  bottom: -100px;
+  /* Shift the track down to create a sky gap at the top */
+  width: 100%;
+  height: 600px;
+  /* Scaled height (353px * 1.7) */
+  background-image: url('/alara-market/market-strip.png');
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  background-size: 1202px 600px;
+  /* Scaled width and height of one tile */
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-
+  animation: marketScroll 30s linear infinite;
+  will-change: background-position;
   pointer-events: none;
-  user-select: none;
-}
-
-/* Hide the tiny line that can appear between copies */
-.marketScene+.marketScene {
-  margin-left: -1px;
 }
 
 .logo {
   position: absolute;
   left: 50%;
-  top: 25%;
+  top: 15%;
 
-  width: 285px;
+  width: 200px;
   height: auto;
 
   transform: translate(-50%, -50%);
@@ -80,8 +56,9 @@
   position: absolute;
   left: 22%;
 
-  /* Align its feet with the pavement */
-  bottom: 120px;
+  /* Align its feet with the pavement (exactly 95.5px from bottom of hero container) */
+  bottom: 126.5px;
+  /* Shifted down by 100px from 188px */
 
   width: 100px;
   height: auto;
@@ -94,17 +71,17 @@
 
 @keyframes marketScroll {
   from {
-    transform: translate3d(0, 0, 0);
+    background-position-x: 0;
   }
 
   to {
-    transform: translate3d(-50%, 0, 0);
+    background-position-x: -1202px;
+    /* Scaled width of one tile */
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .marketTrack {
     animation: none;
-    transform: translate3d(0, 0, 0);
   }
 }

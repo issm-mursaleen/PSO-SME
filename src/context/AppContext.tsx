@@ -22,6 +22,9 @@ export interface InvoiceItem {
   unit: string;
   price: number;
   total: number;
+  /** Links this line item to a tracked inventory product (set on supplier
+   *  purchases so a restock can update the exact SKU instead of guessing by name). */
+  sku?: string;
 }
 
 export interface Invoice {
@@ -55,9 +58,25 @@ export interface SupplierInvoice {
   date: string;
   amount: number;
   discount: number;
-  status: 'Paid';
+  /** Draft = recorded but stock not yet received/applied. Paid = received,
+   *  confirmed, and already reflected in inventory. */
+  status: 'Draft' | 'Paid';
+  /** The supplier's own invoice/reference number, if they gave one. */
+  invoiceNumber?: string;
   items: InvoiceItem[];
   notes: string;
+}
+
+export interface StockMovement {
+  id: string;
+  sku: string;
+  type: 'Restock' | 'Adjustment' | 'Sale';
+  /** Signed delta — positive increases stock, negative decreases it. */
+  quantity: number;
+  date: string;
+  note: string;
+  /** Purchase invoice id, when this movement came from a confirmed restock. */
+  reference?: string;
 }
 
 export interface Notification {
@@ -103,18 +122,12 @@ export interface StockItem {
   supplierId?: string;
 }
 
-/** A purchase line item — same shape as InvoiceItem, plus an optional `sku` so
- *  the purchase can update an exact existing inventory row instead of
- *  matching by product name. */
-export interface PurchaseLineItem extends InvoiceItem {
-  sku?: string;
-}
-
 interface AppContextType {
   customers: Customer[];
   invoices: Invoice[];
   suppliers: Supplier[];
   supplierInvoices: SupplierInvoice[];
+  stockMovements: StockMovement[];
   notifications: Notification[];
   connectQueue: ConnectQueueItem[];
   commLogs: CommunicationLog[];
@@ -128,14 +141,19 @@ interface AppContextType {
     notes: string
   ) => Invoice;
   addSupplier: (supplier: Omit<Supplier, 'id'>) => Supplier;
+  updateSupplier: (id: string, patch: Partial<Supplier>) => Supplier | null;
   recordPurchase: (
     supplierId: string,
-    items: PurchaseLineItem[],
+    items: InvoiceItem[],
     discount: number,
-    notes: string
+    notes: string,
+    opts?: { status?: 'Draft' | 'Paid'; invoiceNumber?: string; date?: string }
   ) => SupplierInvoice;
+  confirmDraftPurchase: (invoiceId: string) => SupplierInvoice | null;
   recordStockIn: (sku: string, quantity: number) => StockItem | null;
   addInventoryItem: (item: Omit<StockItem, 'stockIn' | 'stockOut'>) => StockItem;
+  updateInventoryItem: (sku: string, patch: Partial<StockItem>) => StockItem | null;
+  adjustStock: (sku: string, delta: number, reason: string) => StockItem | null;
   sendWhatsAppReminder: (customerId: string, messageContent: string, type?: 'WhatsApp' | 'SMS' | 'Call') => void;
   recordCustomerReply: (customerId: string, messageContent: string, type?: 'WhatsApp' | 'SMS' | 'Call') => void;
 }
@@ -1240,6 +1258,14 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     { sku: 'TEA-475', product: 'Tapal Danedar 475g', category: 'Grocery', current: 3, reorder: 10, stockIn: 36, stockOut: 33, route: 'Nazimabad Route', supplierId: 'sup-general' },
   ]);
 
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>([
+    { id: 'MOV-1001', sku: 'RICE-25', type: 'Restock', quantity: 12, date: isoDaysAgo(6), note: 'Purchased from Al-Madina Grain Traders', reference: 'PINV-1001' },
+    { id: 'MOV-1002', sku: 'MILK-1L', type: 'Restock', quantity: 24, date: isoDaysAgo(3), note: 'Purchased from Sindh Dairy Suppliers', reference: 'PINV-1002' },
+    { id: 'MOV-1003', sku: 'OIL-5L', type: 'Sale', quantity: -6, date: isoDaysAgo(2), note: 'Sold to walk-in customers' },
+    { id: 'MOV-1004', sku: 'TEA-475', type: 'Sale', quantity: -4, date: isoDaysAgo(1), note: 'Sold to walk-in customers' },
+    { id: 'MOV-1005', sku: 'SUGAR-1K', type: 'Adjustment', quantity: -2, date: isoDaysAgo(4), note: 'Damaged packaging written off' },
+  ]);
+
   // --- Actions ---
 
   const addCustomer = (customerData: Omit<Customer, 'id' | 'lastVisitDays'>): Customer => {
@@ -1308,76 +1334,41 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return newSupplier;
   };
 
-  const recordPurchase = (
-    supplierId: string,
-    items: PurchaseLineItem[],
-    discount: number,
-    notes: string
-  ): SupplierInvoice => {
-    const supplier = suppliers.find((s) => s.id === supplierId);
-    if (!supplier) throw new Error('Supplier not found');
+  const updateSupplier = (id: string, patch: Partial<Supplier>): Supplier | null => {
+    let updated: Supplier | null = null;
+    setSuppliers((prev) =>
+      prev.map((s) => {
+        if (s.id !== id) return s;
+        updated = { ...s, ...patch };
+        return updated;
+      }),
+    );
+    return updated;
+  };
 
-    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
-    const grandTotal = subtotal - discount;
+  /** Apply a confirmed (Paid) purchase to inventory: restock the exact SKU
+   *  when known, match an existing product of this supplier by name, or
+   *  create a new tracked product linked to this supplier. Logs a
+   *  Restock movement per line so "View Stock History" stays accurate. */
+  const applyPurchaseToInventory = (supplier: Supplier, items: InvoiceItem[], invoiceId: string) => {
+    const resolved = items.map((item) => {
+      if (item.sku) return { item, sku: item.sku, isNew: false };
+      const existing = inventory.find(
+        (s) => s.supplierId === supplier.id && s.product.toLowerCase() === item.name.toLowerCase(),
+      );
+      if (existing) return { item, sku: existing.sku, isNew: false };
+      const newSku = `SKU-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 100)}`;
+      return { item, sku: newSku, isNew: true };
+    });
 
-    const newInvoiceId = `PINV-${Math.floor(Math.random() * 10000 + 2000)}`;
-    const dateStr = new Date().toISOString().split('T')[0];
-
-    // Strip the UI-only `sku` field before storing — the invoice itself only
-    // needs the InvoiceItem shape.
-    const invoiceItems: InvoiceItem[] = items.map((item) => ({
-      name: item.name,
-      quantity: item.quantity,
-      unit: item.unit,
-      price: item.price,
-      total: item.total,
-    }));
-
-    const newPurchase: SupplierInvoice = {
-      id: newInvoiceId,
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      date: dateStr,
-      amount: grandTotal,
-      discount,
-      status: 'Paid',
-      items: invoiceItems,
-      notes,
-    };
-
-    setSupplierInvoices((prev) => [newPurchase, ...prev]);
-
-    // Restock inventory: match by SKU when the row referenced an existing
-    // tracked product; otherwise create a new product linked to this
-    // supplier so future purchases can select it directly.
     setInventory((prev) => {
       let next = prev;
-      for (const item of items) {
-        if (item.sku) {
-          next = next.map((stockItem) =>
-            stockItem.sku === item.sku
-              ? { ...stockItem, current: stockItem.current + item.quantity, stockIn: stockItem.stockIn + item.quantity }
-              : stockItem,
-          );
-          continue;
-        }
-        const existing = next.find(
-          (stockItem) =>
-            stockItem.supplierId === supplier.id &&
-            stockItem.product.toLowerCase() === item.name.toLowerCase(),
-        );
-        if (existing) {
-          next = next.map((stockItem) =>
-            stockItem.sku === existing.sku
-              ? { ...stockItem, current: stockItem.current + item.quantity, stockIn: stockItem.stockIn + item.quantity }
-              : stockItem,
-          );
-        } else {
-          const newSku = `SKU-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 100)}`;
+      for (const { item, sku, isNew } of resolved) {
+        if (isNew) {
           next = [
             ...next,
             {
-              sku: newSku,
+              sku,
               product: item.name,
               category: supplier.category,
               current: item.quantity,
@@ -1388,12 +1379,91 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               supplierId: supplier.id,
             },
           ];
+        } else {
+          next = next.map((s) =>
+            s.sku === sku
+              ? {
+                  ...s,
+                  current: s.current + item.quantity,
+                  stockIn: s.stockIn + item.quantity,
+                  // First purchase from a supplier establishes the preferred
+                  // supplier for a previously-unlinked product.
+                  supplierId: s.supplierId ?? supplier.id,
+                }
+              : s,
+          );
         }
       }
       return next;
     });
 
+    setStockMovements((prev) => [
+      ...resolved.map(({ item, sku }) => ({
+        id: `MOV-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+        sku,
+        type: 'Restock' as const,
+        quantity: item.quantity,
+        date: new Date().toISOString().split('T')[0],
+        note: `Purchased from ${supplier.name}`,
+        reference: invoiceId,
+      })),
+      ...prev,
+    ]);
+  };
+
+  const recordPurchase = (
+    supplierId: string,
+    items: InvoiceItem[],
+    discount: number,
+    notes: string,
+    opts?: { status?: 'Draft' | 'Paid'; invoiceNumber?: string; date?: string }
+  ): SupplierInvoice => {
+    const supplier = suppliers.find((s) => s.id === supplierId);
+    if (!supplier) throw new Error('Supplier not found');
+
+    const status = opts?.status ?? 'Paid';
+    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    const grandTotal = subtotal - discount;
+
+    const newInvoiceId = `PINV-${Math.floor(Math.random() * 10000 + 2000)}`;
+    const dateStr = opts?.date ?? new Date().toISOString().split('T')[0];
+
+    const newPurchase: SupplierInvoice = {
+      id: newInvoiceId,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      date: dateStr,
+      amount: grandTotal,
+      discount,
+      status,
+      invoiceNumber: opts?.invoiceNumber,
+      items,
+      notes,
+    };
+
+    setSupplierInvoices((prev) => [newPurchase, ...prev]);
+
+    // A draft purchase hasn't been received yet — stock only moves once it's
+    // confirmed (here immediately, or later via confirmDraftPurchase).
+    if (status === 'Paid') {
+      applyPurchaseToInventory(supplier, items, newInvoiceId);
+    }
+
     return newPurchase;
+  };
+
+  /** Confirm a previously drafted purchase: flips it to Paid and applies the
+   *  stock movement that was deferred when it was saved as a draft. */
+  const confirmDraftPurchase = (invoiceId: string): SupplierInvoice | null => {
+    const draft = supplierInvoices.find((inv) => inv.id === invoiceId && inv.status === 'Draft');
+    if (!draft) return null;
+    const supplier = suppliers.find((s) => s.id === draft.supplierId);
+    if (!supplier) return null;
+
+    const confirmed: SupplierInvoice = { ...draft, status: 'Paid' };
+    setSupplierInvoices((prev) => prev.map((inv) => (inv.id === invoiceId ? confirmed : inv)));
+    applyPurchaseToInventory(supplier, draft.items, draft.id);
+    return confirmed;
   };
 
   const updateCustomer = (id: string, patch: Partial<Customer>): Customer | null => {
@@ -1437,6 +1507,48 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       return prev.map((entry) => (entry.sku === existing.sku ? result : entry));
     });
     return result;
+  };
+
+  /** Edit a product's metadata (name, category, reorder level, preferred
+   *  supplier). Does not touch stock levels — that's restock/adjust's job. */
+  const updateInventoryItem = (sku: string, patch: Partial<StockItem>): StockItem | null => {
+    let updated: StockItem | null = null;
+    setInventory((prev) =>
+      prev.map((item) => {
+        if (item.sku !== sku) return item;
+        updated = { ...item, ...patch };
+        return updated;
+      }),
+    );
+    return updated;
+  };
+
+  /** Manual stock correction (damage, recount, write-off) — independent of
+   *  any purchase, logged as an Adjustment movement. */
+  const adjustStock = (sku: string, delta: number, reason: string): StockItem | null => {
+    if (!Number.isFinite(delta) || delta === 0) return null;
+    let updated: StockItem | null = null;
+    setInventory((prev) =>
+      prev.map((item) => {
+        if (item.sku !== sku) return item;
+        updated = { ...item, current: Math.max(0, item.current + delta) };
+        return updated;
+      }),
+    );
+    if (updated) {
+      setStockMovements((prev) => [
+        {
+          id: `MOV-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+          sku,
+          type: 'Adjustment',
+          quantity: delta,
+          date: new Date().toISOString().split('T')[0],
+          note: reason || 'Manual adjustment',
+        },
+        ...prev,
+      ]);
+    }
+    return updated;
   };
 
   const getCommTimestamp = () => {
@@ -1510,6 +1622,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         invoices,
         suppliers,
         supplierInvoices,
+        stockMovements,
         notifications,
         connectQueue,
         commLogs,
@@ -1518,9 +1631,13 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updateCustomer,
         recordSale,
         addSupplier,
+        updateSupplier,
         recordPurchase,
+        confirmDraftPurchase,
         recordStockIn,
         addInventoryItem,
+        updateInventoryItem,
+        adjustStock,
         sendWhatsAppReminder,
         recordCustomerReply,
       }}

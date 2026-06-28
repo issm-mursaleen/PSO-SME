@@ -38,7 +38,7 @@ export default function RootLayout({
               <Header />
 
               {/* Main Content Area */}
-              <main className="ml-[208px] pt-[52px] min-h-screen bg-background">
+              <main className="ml-16 pt-[52px] min-h-screen bg-background">
                 {children}
               </main>
             </div>

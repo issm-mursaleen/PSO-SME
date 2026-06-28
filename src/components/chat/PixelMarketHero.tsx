@@ -6,21 +6,7 @@ export function PixelMarketHero() {
   return (
     <div className={styles.hero}>
       <div className={styles.marketViewport}>
-        <div className={styles.marketTrack}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/alara-market/market-strip.png"
-            className={styles.marketScene}
-            alt=""
-          />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/alara-market/market-strip.png"
-            className={styles.marketScene}
-            alt=""
-            aria-hidden="true"
-          />
-        </div>
+        <div className={styles.marketTrack} />
       </div>
 
       {/* eslint-disable-next-line @next/next/no-img-element */}

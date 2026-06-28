@@ -16,7 +16,7 @@ function ChatWorkspace() {
   const {
     chatMessages, chatThreads, activeChatId, isTyping,
     sendMessage, confirmCard, sendDraftCard, pickCandidate,
-    startNewChat, selectChatThread,
+    startNewChat, selectChatThread, deleteChatThread,
   } = useAlaraChat();
 
   const searchParams = useSearchParams();
@@ -54,6 +54,7 @@ function ChatWorkspace() {
         activeChatId={activeChatId}
         onNew={startNewChat}
         onSelect={selectChatThread}
+        onDelete={deleteChatThread}
       />
 
       <div className="flex-1 flex flex-col min-w-0 relative">
