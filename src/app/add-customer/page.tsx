@@ -167,7 +167,6 @@ export default function AddCustomer() {
                       onChange={(e) => setPreferredChannel(e.target.value)}
                     >
                       <option value="WhatsApp">WhatsApp</option>
-                      <option value="Call">Call</option>
                       <option value="SMS">SMS</option>
                     </select>
                   </div>

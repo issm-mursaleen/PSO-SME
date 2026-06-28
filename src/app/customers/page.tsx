@@ -244,13 +244,6 @@ function CustomersListContent() {
                             <Icon name="chat" size={18} />
                           </Link>
                           <Link
-                            href="/connect"
-                            className="p-1.5 rounded-lg border border-outline-variant hover:bg-primary-container hover:text-on-primary-container transition-all"
-                            title="Call Log"
-                          >
-                            <Icon name="call" size={18} />
-                          </Link>
-                          <Link
                             href={`/customers/${customer.id}`}
                             className="px-3 py-1.5 border border-primary text-primary font-label-md rounded-lg hover:bg-primary-container hover:text-on-primary-container transition-all text-xs font-bold"
                           >

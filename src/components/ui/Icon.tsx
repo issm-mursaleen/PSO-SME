@@ -1,13 +1,13 @@
 import {
   Landmark, Plus, PlusCircle, FilePlus, ShoppingCart, BarChart3, Paperclip,
-  Phone, PhoneOff, Megaphone, XCircle, MessageSquare, CheckCircle2, ChevronRight,
+  Megaphone, XCircle, MessageSquare, CheckCircle2, ChevronRight,
   X, CreditCard, Trash2, Trash, Check, CheckCheck, Download, Pencil, MessagesSquare,
   Gavel, History, Network, Image as ImageIcon, Info, LineChart, Lightbulb, KeyRound,
   BookOpen, Mic, MoreVertical, BellRing, Banknote, User, UserPlus, UserSearch,
   FileText, PieChart, Printer, Receipt, ReceiptText, AlertTriangle, Save, Clock,
   Search, Send, Share2, Bot, Store, Table as TableIcon, TrendingUp, TrendingDown,
   BadgeCheck, Video, Flame, Sun, Moon, Bell, Settings, Calendar, LayoutDashboard,
-  Users, HelpCircle, Wallet, PauseCircle, MessageCircle, Smartphone, PhoneCall,
+  Users, HelpCircle, Wallet, PauseCircle, MessageCircle, Smartphone,
   ShieldAlert, ChevronUp, Circle, type LucideIcon,
 } from 'lucide-react';
 
@@ -21,8 +21,6 @@ const MAP: Record<string, LucideIcon> = {
   analytics: BarChart3,
   attach_file: Paperclip,
   attachment: Paperclip,
-  call: Phone,
-  call_end: PhoneOff,
   campaign: Megaphone,
   cancel: XCircle,
   chat: MessageSquare,
@@ -55,7 +53,6 @@ const MAP: Record<string, LucideIcon> = {
   sms: MessageCircle,
   chat_bubble_outline: MessageCircle,
   phone_iphone: Smartphone,
-  phone_callback: PhoneCall,
   gpp_bad: ShieldAlert,
   keyboard_arrow_up: ChevronUp,
   notifications: Bell,

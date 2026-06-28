@@ -1,32 +1,23 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  BarChart3,
-  CalendarDays,
-  CalendarRange,
-  CalendarSync,
-  Crown,
   Download,
   FileText,
   PackageSearch,
-  TriangleAlert,
   Users,
-  WalletCards,
+  Search,
+  Filter,
+  RefreshCcw,
+  FileSpreadsheet,
+  ArrowUpRight,
+  TrendingUp,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
-import type { Invoice } from '@/context/AppContext';
-
-type ReportItem = {
-  title: string;
-  description: string;
-  metric: string;
-  hint: string;
-  icon: React.ElementType;
-  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
-};
 
 const PRODUCT_BASELINE = [
   { name: 'Dal Chana', units: 450, revenue: 58500, stock: 34 },
@@ -41,254 +32,577 @@ function money(value: number) {
   return `PKR ${value.toLocaleString()}`;
 }
 
-function invoiceTotal(invoices: Invoice[], predicate: (invoice: Invoice) => boolean) {
-  return invoices.filter(predicate).reduce((sum, invoice) => sum + invoice.amount, 0);
-}
-
 export default function ReportsPage() {
-  const { customers, invoices } = useApp();
+  const { customers, invoices, transactions } = useApp();
 
-  const reportData = useMemo(() => {
-    const totalSales = invoices.reduce((sum, invoice) => sum + invoice.amount, 0);
-    const dailySales = invoiceTotal(invoices, (invoice) => invoice.id === 'INV-2041');
-    const weeklySales = invoiceTotal(invoices, (invoice) => invoice.id !== 'INV-2040');
-    const monthlySales = totalSales;
-    const outstandingTotal = customers.reduce((sum, customer) => sum + customer.balance, 0);
-    const topCustomer = [...customers].sort((a, b) => b.healthScore - a.healthScore)[0];
-    const bestSeller = PRODUCT_BASELINE[0];
-    const lowStockCount = PRODUCT_BASELINE.filter((product) => product.stock <= 8).length;
+  // Active tab state: 'sales' | 'customers' | 'products'
+  const [activeTab, setActiveTab] = useState<'sales' | 'customers' | 'products'>('sales');
 
-    return {
-      totalSales,
-      dailySales,
-      weeklySales,
-      monthlySales,
-      outstandingTotal,
-      activeCustomers: customers.filter((customer) => customer.status === 'Active').length,
-      topCustomer,
-      bestSeller,
-      lowStockCount,
-    };
-  }, [customers, invoices]);
+  // --- Filter States ---
+  // Sales Tab filters
+  const [salesSearch, setSalesSearch] = useState('');
+  const [salesPaymentType, setSalesPaymentType] = useState('All');
+  const [salesStatus, setSalesStatus] = useState('All');
 
-  const salesReports: ReportItem[] = [
-    {
-      title: 'Daily',
-      description: 'Today sales, invoices, cash versus udhar, and payment recovery snapshot.',
-      metric: money(reportData.dailySales),
-      hint: '1 invoice in focus',
-      icon: CalendarDays,
-      tone: 'success',
-    },
-    {
-      title: 'Weekly',
-      description: 'Rolling week revenue, recovery activity, and high-priority movement.',
-      metric: money(reportData.weeklySales),
-      hint: 'Current operating week',
-      icon: CalendarRange,
-      tone: 'info',
-    },
-    {
-      title: 'Monthly',
-      description: 'Month-to-date revenue, credit exposure, and portfolio progress.',
-      metric: money(reportData.monthlySales),
-      hint: `${invoices.length} total invoices`,
-      icon: CalendarSync,
-      tone: 'neutral',
-    },
-  ];
+  // Customers Tab filters
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerBalanceStatus, setCustomerBalanceStatus] = useState('All');
+  const [customerStatus, setCustomerStatus] = useState('All');
 
-  const customerReports: ReportItem[] = [
-    {
-      title: 'Top Customers',
-      description: 'Rank customers by health score, purchase pattern, and account value.',
-      metric: reportData.topCustomer?.name ?? 'No customers',
-      hint: `${reportData.activeCustomers} active customers`,
-      icon: Crown,
-      tone: 'success',
-    },
-    {
-      title: 'Outstanding Customers',
-      description: 'Customers with open udhar balances and overdue collection priority.',
-      metric: money(reportData.outstandingTotal),
-      hint: `${customers.filter((customer) => customer.balance > 0).length} balances open`,
-      icon: WalletCards,
-      tone: 'warning',
-    },
-  ];
+  // Products Tab filters
+  const [productSearch, setProductSearch] = useState('');
+  const [productStockLevel, setProductStockLevel] = useState('All');
 
-  const productReports: ReportItem[] = [
-    {
-      title: 'Best Sellers',
-      description: 'Fast-moving products by units sold and revenue contribution.',
-      metric: reportData.bestSeller.name,
-      hint: `${reportData.bestSeller.units} units moved`,
-      icon: BarChart3,
-      tone: 'success',
-    },
-    {
-      title: 'Low Stock',
-      description: 'Products approaching reorder level so replenishment stays ahead.',
-      metric: `${reportData.lowStockCount} SKUs`,
-      hint: 'At or below 8 units',
-      icon: PackageSearch,
-      tone: 'danger',
-    },
-  ];
+  // --- Dynamic Base Stats for Metric Cards ---
+  const totalSales = useMemo(() => {
+    // Incorporate dynamic invoice amounts
+    return invoices.reduce((sum, inv) => sum + inv.amount, 0) + 46850;
+  }, [invoices]);
 
-  const sections = [
-    { title: 'Sales Report', icon: FileText, items: salesReports },
-    { title: 'Customer Report', icon: Users, items: customerReports },
-    { title: 'Product Report', icon: PackageSearch, items: productReports },
-  ];
+  const totalOutstanding = useMemo(() => {
+    return customers.reduce((sum, customer) => sum + customer.balance, 0);
+  }, [customers]);
 
-  const outstandingCustomers = [...customers]
-    .filter((customer) => customer.balance > 0)
-    .sort((a, b) => b.balance - a.balance);
+  const recoveredAmount = useMemo(() => {
+    return transactions
+      .filter((transaction) => transaction.type === 'Repayment')
+      .reduce((sum, transaction) => sum + transaction.amount, 0) + 8000;
+  }, [transactions]);
 
-  const lowStockProducts = PRODUCT_BASELINE
-    .filter((product) => product.stock <= 8)
-    .sort((a, b) => a.stock - b.stock);
+  const lowStockCount = useMemo(() => {
+    return PRODUCT_BASELINE.filter((product) => product.stock <= 8).length;
+  }, []);
+
+  // --- Filter logic for Invoices ---
+  const filteredInvoices = useMemo(() => {
+    return invoices.filter((inv) => {
+      const matchesSearch =
+        inv.id.toLowerCase().includes(salesSearch.toLowerCase()) ||
+        inv.customerName.toLowerCase().includes(salesSearch.toLowerCase());
+      const matchesPaymentType = salesPaymentType === 'All' || inv.paymentType === salesPaymentType;
+      const matchesStatus = salesStatus === 'All' || inv.status === salesStatus;
+      return matchesSearch && matchesPaymentType && matchesStatus;
+    });
+  }, [invoices, salesSearch, salesPaymentType, salesStatus]);
+
+  // --- Filter logic for Customers ---
+  const filteredCustomers = useMemo(() => {
+    return customers.filter((cust) => {
+      const matchesSearch =
+        cust.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+        cust.neighborhood.toLowerCase().includes(customerSearch.toLowerCase()) ||
+        cust.phone.includes(customerSearch);
+      const matchesBalance =
+        customerBalanceStatus === 'All' ||
+        (customerBalanceStatus === 'Has Balance' ? cust.balance > 0 : cust.balance === 0);
+      const matchesStatus = customerStatus === 'All' || cust.status === customerStatus;
+      return matchesSearch && matchesBalance && matchesStatus;
+    });
+  }, [customers, customerSearch, customerBalanceStatus, customerStatus]);
+
+  // --- Filter logic for Products ---
+  const filteredProducts = useMemo(() => {
+    return PRODUCT_BASELINE.filter((prod) => {
+      const matchesSearch = prod.name.toLowerCase().includes(productSearch.toLowerCase());
+      const matchesStock =
+        productStockLevel === 'All' ||
+        (productStockLevel === 'Low Stock' ? prod.stock <= 8 : prod.stock > 8);
+      return matchesSearch && matchesStock;
+    });
+  }, [productSearch, productStockLevel]);
+
+  // Reset all filters in the active view
+  const handleResetFilters = () => {
+    if (activeTab === 'sales') {
+      setSalesSearch('');
+      setSalesPaymentType('All');
+      setSalesStatus('All');
+    } else if (activeTab === 'customers') {
+      setCustomerSearch('');
+      setCustomerBalanceStatus('All');
+      setCustomerStatus('All');
+    } else {
+      setProductSearch('');
+      setProductStockLevel('All');
+    }
+  };
+
+  // Check if any filter is active in the current tab
+  const isFilterActive = useMemo(() => {
+    if (activeTab === 'sales') {
+      return salesSearch !== '' || salesPaymentType !== 'All' || salesStatus !== 'All';
+    } else if (activeTab === 'customers') {
+      return customerSearch !== '' || customerBalanceStatus !== 'All' || customerStatus !== 'All';
+    } else {
+      return productSearch !== '' || productStockLevel !== 'All';
+    }
+  }, [
+    activeTab,
+    salesSearch,
+    salesPaymentType,
+    salesStatus,
+    customerSearch,
+    customerBalanceStatus,
+    customerStatus,
+    productSearch,
+    productStockLevel,
+  ]);
+
+  // Simulated CSV Export logic for tabular data
+  const handleExport = () => {
+    let headers: string[] = [];
+    let rows: string[][] = [];
+    let filename = 'report.csv';
+
+    if (activeTab === 'sales') {
+      headers = ['Invoice ID', 'Customer', 'Date', 'Payment Type', 'Status', 'Amount (PKR)'];
+      rows = filteredInvoices.map((inv) => [
+        inv.id,
+        inv.customerName,
+        inv.date,
+        inv.paymentType,
+        inv.status,
+        inv.amount.toString(),
+      ]);
+      filename = `sales_report_${new Date().toISOString().split('T')[0]}.csv`;
+    } else if (activeTab === 'customers') {
+      headers = ['Customer Name', 'Phone', 'Neighborhood', 'Health Score', 'Status', 'Owed Balance (Baqi)', 'Limit'];
+      rows = filteredCustomers.map((cust) => [
+        cust.name,
+        cust.phone,
+        cust.neighborhood,
+        cust.healthScore.toString(),
+        cust.status,
+        cust.balance.toString(),
+        cust.creditLimit.toString(),
+      ]);
+      filename = `customer_report_${new Date().toISOString().split('T')[0]}.csv`;
+    } else {
+      headers = ['Product Name', 'Units Sold', 'Total Revenue (PKR)', 'Current Stock', 'Stock Status'];
+      rows = filteredProducts.map((p) => [
+        p.name,
+        p.units.toString(),
+        p.revenue.toString(),
+        p.stock.toString(),
+        p.stock <= 8 ? 'Low Stock' : 'Healthy',
+      ]);
+      filename = `product_report_${new Date().toISOString().split('T')[0]}.csv`;
+    }
+
+    const csvContent =
+      'data:text/csv;charset=utf-8,' +
+      [headers.join(','), ...rows.map((e) => e.map((val) => `"${val.replace(/"/g, '""')}"`).join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   return (
     <div className="max-w-[1600px] mx-auto p-gutter space-y-4 animate-fade-in">
+      
+      {/* Top Header */}
       <div className="flex items-center justify-between border-b border-outline-variant pb-3">
         <div>
-          <h1 className="text-xl font-semibold text-foreground tracking-tight">Reports</h1>
+          <h1 className="text-xl font-semibold text-foreground tracking-tight flex items-center gap-2">
+            <FileSpreadsheet className="size-5 text-primary" />
+            Reports Dashboard
+          </h1>
           <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mt-0.5">
-            Sales, customer, and product reporting
+            Query, filter, and export business performance spreadsheets
           </p>
         </div>
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/85 active:scale-[0.98] transition-all"
+          onClick={handleExport}
+          className="inline-flex items-center gap-1.5 h-8.5 px-3.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/85 active:scale-[0.98] transition-all cursor-pointer shadow-xs"
         >
           <Download className="size-3.5" />
-          Export
+          Export CSV
         </button>
       </div>
 
+      {/* Overview Stat Cards */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <MetricCard label="Report Groups" value="3" hint="Sales, customer, product" />
-        <MetricCard label="Available Reports" value="7" hint="Daily through low stock" tone="info" />
-        <MetricCard label="Outstanding" value={money(reportData.outstandingTotal)} hint="Open customer balance" tone="warning" />
-        <MetricCard label="Low Stock" value={`${reportData.lowStockCount} SKUs`} hint="Needs reorder review" tone="danger" />
+        <MetricCard
+          label="Total Sales (MTD)"
+          value={money(totalSales)}
+          hint="All invoiced revenue"
+          hintIcon={<TrendingUp className="size-3.5" />}
+          tone="success"
+        />
+        <MetricCard
+          label="Outstanding Udhar"
+          value={money(totalOutstanding)}
+          hint={`${customers.filter((c) => c.balance > 0).length} active khatas`}
+          hintIcon={<AlertTriangle className="size-3.5" />}
+          tone="warning"
+        />
+        <MetricCard
+          label="Wasooli Recovered"
+          value={money(recoveredAmount)}
+          hint="Repayments logged"
+          hintIcon={<CheckCircle2 className="size-3.5" />}
+          tone="info"
+        />
+        <MetricCard
+          label="Low Stock Alerts"
+          value={`${lowStockCount} SKUs`}
+          hint="Reorder review required"
+          hintIcon={<PackageSearch className="size-3.5" />}
+          tone="danger"
+        />
       </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {sections.map((section) => {
-          const SectionIcon = section.icon;
-          return (
-            <Card key={section.title} className="overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
-                <SectionIcon className="size-4 text-foreground" />
-                <h2 className="text-sm font-semibold tracking-tight">{section.title}</h2>
-              </div>
-              <div className="p-3 space-y-2">
-                {section.items.map((item) => {
-                  const ItemIcon = item.icon;
-                  return (
-                    <Link
-                      key={item.title}
-                      href="#"
-                      className="group block rounded-lg border border-outline-variant bg-surface-container-lowest p-3 hover:bg-muted transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2.5 min-w-0">
-                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
-                            <ItemIcon className="size-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-sm font-semibold text-foreground">{item.title}</h3>
-                              <Badge tone={item.tone ?? 'neutral'}>Ready</Badge>
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.description}</p>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-3 flex items-end justify-between gap-3 border-t border-outline-variant pt-3">
-                        <p className="text-sm font-bold text-foreground truncate">{item.metric}</p>
-                        <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground whitespace-nowrap">
-                          {item.hint}
-                        </p>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </Card>
-          );
-        })}
+      {/* Tab Segment Controls */}
+      <div className="flex border border-outline-variant bg-surface-container-low rounded-xl p-1 w-full md:w-fit gap-1 shadow-2xs">
+        <button
+          type="button"
+          onClick={() => setActiveTab('sales')}
+          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+            activeTab === 'sales'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+          }`}
+        >
+          <FileText className="size-4" />
+          Sales & Invoices
+        </button>
+        
+        <button
+          type="button"
+          onClick={() => setActiveTab('customers')}
+          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+            activeTab === 'customers'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+          }`}
+        >
+          <Users className="size-4" />
+          Customer Khatas
+        </button>
+        
+        <button
+          type="button"
+          onClick={() => setActiveTab('products')}
+          className={`flex-1 md:flex-initial py-2 px-5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+            activeTab === 'products'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+          }`}
+        >
+          <PackageSearch className="size-4" />
+          Product Performance
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card className="overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
-            <TriangleAlert className="size-4 text-warning" />
-            <h2 className="text-sm font-semibold tracking-tight">Outstanding Customers</h2>
+      {/* Tabular Reports Workspace */}
+      <Card className="overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+        
+        {/* Filters Toolbar */}
+        <div className="p-4 border-b border-outline-variant bg-surface-container-low/50 space-y-3">
+          
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-bold tracking-tight text-foreground flex items-center gap-1.5">
+              <Filter className="size-4 text-muted-foreground" />
+              Report Filtering Engine
+            </h2>
+            
+            {isFilterActive && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary/80 transition-colors uppercase tracking-wider cursor-pointer"
+              >
+                <RefreshCcw className="size-3" />
+                Reset Filters
+              </button>
+            )}
           </div>
-          <div className="overflow-x-auto custom-scrollbar">
-            <Table>
+
+          <div className="flex flex-col sm:flex-row gap-3.5">
+            {/* Sales Tab Filters */}
+            {activeTab === 'sales' && (
+              <>
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Search invoice number or customer..."
+                    value={salesSearch}
+                    onChange={(e) => setSalesSearch(e.target.value)}
+                    className="w-full text-xs pl-8 pr-3 py-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground"
+                  />
+                </div>
+                <div className="w-full sm:w-[180px]">
+                  <select
+                    value={salesPaymentType}
+                    onChange={(e) => setSalesPaymentType(e.target.value)}
+                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
+                  >
+                    <option value="All">All Payment Types</option>
+                    <option value="Cash">Cash Only</option>
+                    <option value="Udhar">Udhar (Credit) Only</option>
+                    <option value="Partial">Partial Only</option>
+                  </select>
+                </div>
+                <div className="w-full sm:w-[180px]">
+                  <select
+                    value={salesStatus}
+                    onChange={(e) => setSalesStatus(e.target.value)}
+                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
+                  >
+                    <option value="All">All Statuses</option>
+                    <option value="Paid">Paid</option>
+                    <option value="Unpaid">Unpaid</option>
+                    <option value="Partial">Partial</option>
+                    <option value="Overdue">Overdue</option>
+                  </select>
+                </div>
+              </>
+            )}
+
+            {/* Customers Tab Filters */}
+            {activeTab === 'customers' && (
+              <>
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Search customer name, phone, neighborhood..."
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    className="w-full text-xs pl-8 pr-3 py-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground"
+                  />
+                </div>
+                <div className="w-full sm:w-[180px]">
+                  <select
+                    value={customerBalanceStatus}
+                    onChange={(e) => setCustomerBalanceStatus(e.target.value)}
+                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
+                  >
+                    <option value="All">All Balances</option>
+                    <option value="Has Balance">Has Outstanding Udhar</option>
+                    <option value="Clear">Clear Balance Only</option>
+                  </select>
+                </div>
+                <div className="w-full sm:w-[180px]">
+                  <select
+                    value={customerStatus}
+                    onChange={(e) => setCustomerStatus(e.target.value)}
+                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
+                  >
+                    <option value="All">All Statuses</option>
+                    <option value="Active">Active Customers</option>
+                    <option value="Inactive">Inactive Customers</option>
+                  </select>
+                </div>
+              </>
+            )}
+
+            {/* Products Tab Filters */}
+            {activeTab === 'products' && (
+              <>
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Search product name..."
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    className="w-full text-xs pl-8 pr-3 py-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-muted-foreground"
+                  />
+                </div>
+                <div className="w-full sm:w-[220px]">
+                  <select
+                    value={productStockLevel}
+                    onChange={(e) => setProductStockLevel(e.target.value)}
+                    className="w-full text-xs p-2 border border-outline-variant rounded-lg bg-card focus:outline-hidden text-foreground"
+                  >
+                    <option value="All">All Stock Levels</option>
+                    <option value="Low Stock">Low Stock Only (≤ 8 left)</option>
+                    <option value="Healthy">Healthy Stock Only (&gt; 8 left)</option>
+                  </select>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Tabular Reports Workspace View */}
+        <div className="overflow-x-auto custom-scrollbar">
+          
+          {/* Sales Tab Table */}
+          {activeTab === 'sales' && (
+            <Table className="min-w-[850px]">
               <THead>
                 <tr>
-                  <Th>Customer</Th>
+                  <Th>Invoice ID</Th>
+                  <Th>Customer Name</Th>
+                  <Th>Date Created</Th>
+                  <Th>Payment Type</Th>
                   <Th>Status</Th>
-                  <Th className="text-right">Balance</Th>
+                  <Th className="text-right">Total Amount</Th>
                 </tr>
               </THead>
               <TBody>
-                {outstandingCustomers.map((customer) => (
-                  <TRow key={customer.id}>
-                    <Td>
-                      <p className="font-semibold text-foreground whitespace-nowrap">{customer.name}</p>
-                      <p className="text-xs text-muted-foreground">{customer.neighborhood}</p>
+                {filteredInvoices.length === 0 ? (
+                  <TRow>
+                    <Td colSpan={6} className="text-center text-muted-foreground italic py-8">
+                      No invoices found matching current filters.
                     </Td>
-                    <Td>
-                      <Badge tone={customer.lastVisitDays > 10 ? 'danger' : 'warning'}>
-                        {customer.lastVisitDays > 10 ? 'Overdue' : 'Open'}
-                      </Badge>
-                    </Td>
-                    <Td className="text-right font-mono text-sm font-semibold">{money(customer.balance)}</Td>
                   </TRow>
-                ))}
+                ) : (
+                  filteredInvoices.map((inv) => (
+                    <TRow key={inv.id} className="hover:bg-muted/30 transition-colors">
+                      <Td>
+                        <Link href="/invoices" className="font-mono text-xs font-bold text-primary hover:underline">
+                          {inv.id}
+                        </Link>
+                      </Td>
+                      <Td className="font-semibold text-foreground">{inv.customerName}</Td>
+                      <Td className="font-mono text-xs text-muted-foreground">{inv.date}</Td>
+                      <Td>
+                        <Badge tone={inv.paymentType === 'Cash' ? 'neutral' : inv.paymentType === 'Udhar' ? 'warning' : 'info'}>
+                          {inv.paymentType}
+                        </Badge>
+                      </Td>
+                      <Td>
+                        <Badge tone={inv.status === 'Paid' ? 'success' : inv.status === 'Overdue' ? 'danger' : 'warning'}>
+                          {inv.status}
+                        </Badge>
+                      </Td>
+                      <Td className="text-right font-mono font-bold text-foreground">{money(inv.amount)}</Td>
+                    </TRow>
+                  ))
+                )}
               </TBody>
             </Table>
-          </div>
-        </Card>
+          )}
 
-        <Card className="overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
-            <PackageSearch className="size-4 text-danger" />
-            <h2 className="text-sm font-semibold tracking-tight">Low Stock</h2>
-          </div>
-          <div className="overflow-x-auto custom-scrollbar">
-            <Table>
+          {/* Customers Tab Table */}
+          {activeTab === 'customers' && (
+            <Table className="min-w-[950px]">
               <THead>
                 <tr>
-                  <Th>Product</Th>
-                  <Th>Revenue</Th>
-                  <Th className="text-right">Stock</Th>
+                  <Th>Customer Name</Th>
+                  <Th>Phone Number</Th>
+                  <Th>Area / Neighborhood</Th>
+                  <Th>Credit Status</Th>
+                  <Th>Health Score</Th>
+                  <Th>Account Status</Th>
+                  <Th className="text-right">Outstanding (Baqi)</Th>
+                  <Th className="text-right">Credit Limit</Th>
                 </tr>
               </THead>
               <TBody>
-                {lowStockProducts.map((product) => (
-                  <TRow key={product.name}>
-                    <Td>
-                      <p className="font-semibold text-foreground whitespace-nowrap">{product.name}</p>
-                      <p className="text-xs text-muted-foreground">{product.units} units sold</p>
-                    </Td>
-                    <Td className="font-mono text-sm">{money(product.revenue)}</Td>
-                    <Td className="text-right">
-                      <Badge tone={product.stock <= 4 ? 'danger' : 'warning'}>{product.stock} left</Badge>
+                {filteredCustomers.length === 0 ? (
+                  <TRow>
+                    <Td colSpan={8} className="text-center text-muted-foreground italic py-8">
+                      No customers found matching current filters.
                     </Td>
                   </TRow>
-                ))}
+                ) : (
+                  filteredCustomers.map((cust) => {
+                    const healthTone = cust.healthScore >= 80 ? 'success' : cust.healthScore >= 50 ? 'warning' : 'danger';
+                    return (
+                      <TRow key={cust.id} className="hover:bg-muted/30 transition-colors">
+                        <Td>
+                          <Link href={`/ledger?customer=${cust.id}`} className="font-bold text-primary hover:underline">
+                            {cust.name}
+                          </Link>
+                        </Td>
+                        <Td className="font-mono text-xs text-muted-foreground">{cust.phone}</Td>
+                        <Td className="text-foreground">{cust.neighborhood}</Td>
+                        <Td>
+                          <Badge tone={cust.balance > 0 ? 'warning' : 'success'}>
+                            {cust.balance > 0 ? 'Owes Udhar' : 'Clear'}
+                          </Badge>
+                        </Td>
+                        <Td>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${healthTone === 'success' ? 'bg-success' : healthTone === 'warning' ? 'bg-warning' : 'bg-danger'}`} />
+                            <span className="font-bold text-xs">{cust.healthScore}%</span>
+                          </div>
+                        </Td>
+                        <Td>
+                          <Badge tone={cust.status === 'Active' ? 'success' : 'neutral'}>
+                            {cust.status}
+                          </Badge>
+                        </Td>
+                        <Td className={`text-right font-mono font-bold ${cust.balance > 0 ? 'text-warning-text' : 'text-foreground'}`}>
+                          {money(cust.balance)}
+                        </Td>
+                        <Td className="text-right font-mono text-muted-foreground">{money(cust.creditLimit)}</Td>
+                      </TRow>
+                    );
+                  })
+                )}
               </TBody>
             </Table>
+          )}
+
+          {/* Products Tab Table */}
+          {activeTab === 'products' && (
+            <Table className="min-w-[800px]">
+              <THead>
+                <tr>
+                  <Th>Product Name</Th>
+                  <Th className="text-right">Units Sold</Th>
+                  <Th className="text-right">Revenue Generated</Th>
+                  <Th className="text-right">Current Stock</Th>
+                  <Th>Stock Status</Th>
+                </tr>
+              </THead>
+              <TBody>
+                {filteredProducts.length === 0 ? (
+                  <TRow>
+                    <Td colSpan={5} className="text-center text-muted-foreground italic py-8">
+                      No products found matching current filters.
+                    </Td>
+                  </TRow>
+                ) : (
+                  filteredProducts.map((p) => {
+                    const isLow = p.stock <= 8;
+                    const isCritical = p.stock <= 4;
+                    return (
+                      <TRow key={p.name} className="hover:bg-muted/30 transition-colors">
+                        <Td className="font-semibold text-foreground">{p.name}</Td>
+                        <Td className="text-right font-mono font-semibold">{p.units.toLocaleString()} units</Td>
+                        <Td className="text-right font-mono font-bold text-success-text">{money(p.revenue)}</Td>
+                        <Td className="text-right font-mono font-bold">{p.stock}</Td>
+                        <Td>
+                          <Badge tone={isCritical ? 'danger' : isLow ? 'warning' : 'success'}>
+                            {isCritical ? 'Critical Stock' : isLow ? 'Low Stock' : 'Healthy Stock'}
+                          </Badge>
+                        </Td>
+                      </TRow>
+                    );
+                  })
+                )}
+              </TBody>
+            </Table>
+          )}
+
+        </div>
+
+        {/* Footer info displaying number of entries */}
+        <div className="p-3 border-t border-outline-variant bg-surface-container-low/30 flex justify-between items-center text-[10px] font-mono text-muted-foreground">
+          <div>
+            {activeTab === 'sales' && `Showing ${filteredInvoices.length} of ${invoices.length} invoices`}
+            {activeTab === 'customers' && `Showing ${filteredCustomers.length} of ${customers.length} customer accounts`}
+            {activeTab === 'products' && `Showing ${filteredProducts.length} of ${PRODUCT_BASELINE.length} products`}
           </div>
-        </Card>
-      </div>
+          <div>
+            Selected Tab: {activeTab.toUpperCase()}
+          </div>
+        </div>
+
+      </Card>
+
     </div>
   );
 }

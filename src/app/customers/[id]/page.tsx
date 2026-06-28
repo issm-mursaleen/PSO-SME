@@ -521,7 +521,7 @@ export default function CustomerDetail({ params: paramsPromise }: { params: Prom
           {/* TAB 3: Communication logs */}
           {activeTab === 'communication' && (
             <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5 shadow-sm space-y-4">
-              <h3 className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-2">WhatsApp &amp; Call History</h3>
+              <h3 className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-2">Message History</h3>
               <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                 {customerLogs.length === 0 ? (
                   <p className="text-xs text-on-surface-variant italic text-center py-6">No communication records found.</p>

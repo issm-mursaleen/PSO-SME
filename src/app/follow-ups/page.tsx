@@ -2,17 +2,17 @@
 
 import React, { useMemo } from 'react';
 import Link from 'next/link';
-import { BellRing, CalendarCheck, MapPin, Phone, Truck, WalletCards } from 'lucide-react';
+import { BellRing, CalendarCheck, MapPin, Truck, WalletCards } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
 
 const reminderTemplates = [
   {
-    title: 'Call customer',
-    description: 'Phone follow-up for overdue, inactive, or high-value customers.',
-    icon: Phone,
+    title: 'Send WhatsApp',
+    description: 'Send a written follow-up for overdue, inactive, or high-value customers.',
+    icon: BellRing,
     tone: 'info' as const,
-    action: 'Open dialer',
+    action: 'Open messages',
   },
   {
     title: 'Collect payment',
@@ -49,8 +49,8 @@ export default function FollowUpsPage() {
             ? 'Collect payment'
             : customer.lastVisitDays > 7
             ? 'Visit customer'
-            : customer.channel === 'Call'
-            ? 'Call customer'
+            : customer.channel === 'WhatsApp'
+            ? 'Send WhatsApp'
             : 'Delivery reminder';
 
         return {
@@ -69,7 +69,7 @@ export default function FollowUpsPage() {
 
   const paymentTasks = followUps.filter((item) => item.kind === 'Collect payment').length;
   const visitTasks = followUps.filter((item) => item.kind === 'Visit customer').length;
-  const callTasks = followUps.filter((item) => item.kind === 'Call customer').length;
+  const messageTasks = followUps.filter((item) => item.kind === 'Send WhatsApp').length;
 
   return (
     <div className="max-w-[1600px] mx-auto p-gutter space-y-4 animate-fade-in">
@@ -77,7 +77,7 @@ export default function FollowUpsPage() {
         <div>
           <h1 className="text-xl font-semibold text-foreground tracking-tight">Customer Follow-ups</h1>
           <p className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mt-0.5">
-            Simple reminders for calls, collections, visits, and deliveries
+            Simple reminders for messages, collections, visits, and deliveries
           </p>
         </div>
         <Link
@@ -91,7 +91,7 @@ export default function FollowUpsPage() {
 
       <section className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         <MetricCard label="Total Reminders" value={followUps.length} hint="Active customer tasks" />
-        <MetricCard label="Call Customer" value={callTasks} hint="Phone follow-ups" tone="info" />
+        <MetricCard label="Send WhatsApp" value={messageTasks} hint="Message follow-ups" tone="info" />
         <MetricCard label="Collect Payment" value={paymentTasks} hint="Udhar recovery tasks" tone="warning" />
         <MetricCard label="Visit Customer" value={visitTasks} hint="Relationship visits" tone="success" />
       </section>

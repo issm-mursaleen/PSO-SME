@@ -70,13 +70,23 @@ export const Header: React.FC = () => {
           )}
         </Link>
 
-        <button className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+        <button
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
           <Settings className="size-4" />
         </button>
 
         <div className="w-px h-5 bg-outline-variant mx-1" />
 
-        <button className="flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-muted transition-colors">
+        <button
+          type="button"
+          aria-label="Account menu"
+          title="Account"
+          className="flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-muted transition-colors"
+        >
           <span className="size-7 rounded-full bg-foreground flex items-center justify-center shrink-0">
             <User className="size-3.5 text-background" />
           </span>

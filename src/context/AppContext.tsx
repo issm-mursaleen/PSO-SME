@@ -790,7 +790,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       customerName: 'Sana Bibi',
       description: 'Has not purchased in 9 days. Usually visits every 4 days.',
       actions: [
-        { label: 'Call', actionType: 'call' },
+        { label: 'Send Message', actionType: 'chat' },
         { label: 'Send Promo', actionType: 'promo' },
       ],
       date: '2 hours ago',

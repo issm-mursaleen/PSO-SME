@@ -1,9 +1,43 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useApp, type ConnectQueueItem } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
+import receiptBackground from '@/assets/payment-receipt-placeholder.png';
+
+const PREBUILT_DRAFTS = [
+  {
+    id: 'balance-reminder',
+    label: 'Balance reminder',
+    channel: 'WhatsApp' as const,
+    text: 'Salam, aap ka udhar balance baqi hai. Baraye meherbani apni sahulat ke mutabiq payment confirm kar dein. Shukriya.',
+  },
+  {
+    id: 'payment-receipt',
+    label: 'Payment receipt',
+    channel: 'WhatsApp' as const,
+    text: 'Salam, aap ki payment receive ho gayi hai. Updated khata balance aur receipt yahan confirm kar di gayi hai. Shukriya.',
+  },
+  {
+    id: 'stock-offer',
+    label: 'Stock offer',
+    channel: 'WhatsApp' as const,
+    text: 'Salam, aaj fresh stock aur special trade offer available hai. Agar aap ko items chahiye hon to reply kar dein.',
+  },
+  {
+    id: 'delivery-update',
+    label: 'Delivery update',
+    channel: 'SMS' as const,
+    text: 'Your order is ready for delivery. Please reply with your preferred delivery time.',
+  },
+] as const;
+
+const PAYMENT_PROOF_REPLIES = [
+  { customerId: 'cust-riaz', amount: 'PKR 5,000', date: '26 Jun 2026 · 11:42 AM', note: 'Payment sent. Screenshot attached for confirmation.' },
+  { customerId: 'cust-iqbal', amount: 'PKR 2,500', date: '25 Jun 2026 · 04:18 PM', note: 'EasyPaisa transfer complete. Please update my khata.' },
+] as const;
 
 export default function CustomerConnect() {
   const {
@@ -63,8 +97,7 @@ export default function CustomerConnect() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
-  // Communication mode selection: WhatsApp, SMS, or Call
-  const [commMode, setCommMode] = useState<'WhatsApp' | 'SMS' | 'Call'>('WhatsApp');
+  const [commMode, setCommMode] = useState<'WhatsApp' | 'SMS'>('WhatsApp');
 
   // Custom theme option (Visual mode)
   const [darkConsoleMode, setDarkConsoleMode] = useState(false);
@@ -72,10 +105,6 @@ export default function CustomerConnect() {
   // Repayment form modal inside context pane
   const [showRepaymentForm, setShowRepaymentForm] = useState(false);
   const [repaymentAmount, setRepaymentAmount] = useState('');
-
-  // Call simulation modal state
-  const [activeCallSimulation, setActiveCallSimulation] = useState<{ active: boolean; seconds: number; loggedText: string } | null>(null);
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Toast message state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -93,9 +122,7 @@ export default function CustomerConnect() {
   /* eslint-disable react-hooks/set-state-in-effect -- Channel follows the selected customer's saved outreach preference. */
   useEffect(() => {
     if (activeCustomer) {
-      if (activeCustomer.channel === 'Call') {
-        setCommMode('Call');
-      } else if (activeCustomer.channel === 'SMS') {
+      if (activeCustomer.channel === 'SMS') {
         setCommMode('SMS');
       } else {
         setCommMode('WhatsApp');
@@ -107,7 +134,7 @@ export default function CustomerConnect() {
   // Find communication logs
   const activeLogs = useMemo(() => {
     if (!activeQueueItem) return [];
-    return commLogs.filter((log) => log.customerId === activeQueueItem.customerId);
+    return commLogs.filter((log) => log.customerId === activeQueueItem.customerId && log.type !== 'Call');
   }, [commLogs, activeQueueItem]);
   const isCustomerTyping = activeQueueItem ? Boolean(typingCustomerIds[activeQueueItem.customerId]) : false;
 
@@ -123,7 +150,7 @@ export default function CustomerConnect() {
   const sentLog = useMemo(() => {
     const q = queueSearch.trim().toLowerCase();
     return commLogs
-      .filter((log) => log.sender === 'Store')
+      .filter((log) => log.sender === 'Store' && log.type !== 'Call')
       .filter(
         (log) =>
           !q ||
@@ -144,7 +171,7 @@ export default function CustomerConnect() {
 
   const scheduleCustomerReply = (
     customerId: string,
-    channel: 'WhatsApp' | 'SMS' | 'Call',
+    channel: 'WhatsApp' | 'SMS',
     sentText: string
   ) => {
     const lowerText = sentText.toLowerCase();
@@ -154,8 +181,8 @@ export default function CustomerConnect() {
       reply = 'Ji, I saw this. I will arrange the payment and update you soon.';
     } else if (lowerText.includes('delivery') || lowerText.includes('items')) {
       reply = 'Ji, please keep the items ready. I will confirm delivery timing.';
-    } else if (lowerText.includes('call') || lowerText.includes('visit')) {
-      reply = 'Ji, you can call me in a while. I am available today.';
+    } else if (lowerText.includes('visit')) {
+      reply = 'Ji, I will confirm a suitable visit time shortly.';
     } else if (lowerText.includes('confirmation') || lowerText.includes('status')) {
       reply = 'I will check and send confirmation shortly.';
     }
@@ -175,7 +202,7 @@ export default function CustomerConnect() {
     if (!messageContent.trim() || !activeQueueItem) return;
 
     const sentText = messageContent.trim();
-    // Use selected commMode parameter to log channel type (WhatsApp, SMS, Call)
+    // Log the selected written outreach channel in the timeline.
     sendWhatsAppReminder(activeQueueItem.customerId, sentText, commMode);
     scheduleCustomerReply(activeQueueItem.customerId, commMode, sentText);
     setMessageContent('');
@@ -196,43 +223,15 @@ export default function CustomerConnect() {
     triggerToast('Template loaded in composer.', 'info');
   };
 
-  // Perform Simulated Client Phone Call
-  const startCallSimulation = () => {
-    if (!activeQueueItem) return;
-    setActiveCallSimulation({ active: true, seconds: 0, loggedText: '' });
-    triggerToast(`Dialing client: ${activeQueueItem.phone}`, 'info');
-    
-    callTimerRef.current = setInterval(() => {
-      setActiveCallSimulation((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          seconds: prev.seconds + 1,
-        };
-      });
-    }, 1000);
+  const loadPrebuiltDraft = (draft: (typeof PREBUILT_DRAFTS)[number]) => {
+    setDashboardDraft(draft.text);
+    setDraftChannel(draft.channel);
+    triggerToast(`${draft.label} loaded for review.`, 'info');
   };
 
-  const hangUpCallSimulation = () => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-    }
-    if (activeCallSimulation) {
-      // Simulate logging outcome
-      const duration = activeCallSimulation.seconds;
-      const logMsg = activeCallSimulation.loggedText.trim() || 'Call connected, client confirmed pending check.';
-      
-      // Use the helper to log call parameters in context
-      sendWhatsAppReminder(
-        activeQueueItem.customerId,
-        `Call connected (Duration: ${duration}s) - Notes: ${logMsg}`,
-        'Call'
-      );
-      
-      triggerToast('Call outcome logged to communication timeline.', 'success');
-    }
-    setActiveCallSimulation(null);
-  };
+  const paymentProofReply = activeCustomer
+    ? PAYMENT_PROOF_REPLIES.find((reply) => reply.customerId === activeCustomer.id)
+    : undefined;
 
   // Log Repayment from Side Panel
   const handleLogRepayment = (e: React.FormEvent) => {
@@ -280,50 +279,6 @@ export default function CustomerConnect() {
           animation: subtle-fade 0.25s ease-out forwards;
         }
       `}} />
-
-      {/* Dialer Overlay Popup Container */}
-      {activeCallSimulation && activeQueueItem && (
-        <div className="absolute inset-0 bg-stone-950/60 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-stone-900 border border-stone-700 text-white rounded-2xl w-80 p-6 flex flex-col items-center gap-4 shadow-2xl anim-subtle-fade">
-            <span className="text-[10px] text-stone-400 font-extrabold uppercase tracking-widest">Active Call Link</span>
-            
-            {/* Pulsing Dialer Ring */}
-            <div className="relative my-2">
-              <div className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center text-white anim-pulse-dot">
-                <Icon name="call" className="animate-bounce" size={28} />
-              </div>
-            </div>
-
-            <div className="text-center">
-              <h4 className="font-bold text-sm">{activeQueueItem.customerName}</h4>
-              <p className="text-[11px] text-stone-400 mt-1">{activeQueueItem.phone}</p>
-              <p className="font-mono text-xs text-stone-400 mt-2">
-                Duration: {Math.floor(activeCallSimulation.seconds / 60).toString().padStart(2, '0')}:
-                {(activeCallSimulation.seconds % 60).toString().padStart(2, '0')}
-              </p>
-            </div>
-
-            {/* Inline Note editor for Call Outcome */}
-            <div className="w-full mt-2">
-              <label className="text-[9px] text-stone-400 font-bold uppercase tracking-wider block mb-1">Call Notes / Outcome</label>
-              <input
-                type="text"
-                placeholder="e.g. Confirmed payment next Tuesday..."
-                value={activeCallSimulation.loggedText}
-                onChange={(e) => setActiveCallSimulation((prev) => prev ? { ...prev, loggedText: e.target.value } : null)}
-                className="w-full text-xs bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-white placeholder:text-stone-500 outline-none focus:border-stone-500"
-              />
-            </div>
-
-            <button
-              onClick={hangUpCallSimulation}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all shadow-lg hover:shadow-red-600/10 active:scale-95"
-            >
-              <Icon name="call_end" size={16} /> End Call & Log Note
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ========================================================
           LEFT COLUMN: OUTREACH TASK QUEUE (320px)
@@ -379,6 +334,32 @@ export default function CustomerConnect() {
             />
           </div>
         </div>
+
+        {queueTab === 'drafts' && (
+          <div className={`border-b p-3 ${darkConsoleMode ? 'border-[#292524] bg-stone-900/30' : 'border-outline-variant/60 bg-surface-container-low'}`}>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-[9px] font-extrabold uppercase tracking-widest text-muted-foreground">Prebuilt drafts</p>
+              <span className="text-[9px] font-mono text-success-text">Ready to personalize</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {PREBUILT_DRAFTS.map((draft) => (
+                <button
+                  key={draft.id}
+                  type="button"
+                  onClick={() => loadPrebuiltDraft(draft)}
+                  className={`rounded-md border px-2 py-2 text-left text-[10px] font-semibold transition-colors ${
+                    darkConsoleMode
+                      ? 'border-stone-700 bg-stone-800 text-stone-200 hover:bg-stone-700'
+                      : 'border-outline-variant bg-card text-foreground hover:border-primary/30 hover:bg-primary-fixed/30'
+                  }`}
+                >
+                  <span className="block truncate">{draft.label}</span>
+                  <span className="mt-0.5 block font-mono text-[8px] font-normal text-muted-foreground">{draft.channel}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* List */}
         <div className={`flex-1 overflow-y-auto custom-scrollbar divide-y ${darkConsoleMode ? 'divide-[#292524]' : 'divide-outline-variant/60'}`}>
@@ -482,20 +463,13 @@ export default function CustomerConnect() {
               <div>
                 <h3 className="font-bold text-sm">{activeQueueItem.customerName}</h3>
                 <p className="text-[10px] opacity-75">
-                  Phone: {activeQueueItem.phone} • Channel Preference: <span className="font-bold">{activeCustomer.channel}</span>
+                  Phone: {activeQueueItem.phone} • Channel Preference: <span className="font-bold">{activeCustomer.channel === 'SMS' ? 'SMS' : 'WhatsApp'}</span>
                 </p>
               </div>
             </div>
 
             {/* Quick Actions Header */}
             <div className="flex items-center gap-2">
-              <button
-                onClick={startCallSimulation}
-                className="px-3 py-1.5 bg-stone-600 text-white font-bold text-xs rounded-lg hover:bg-stone-500 active:scale-95 transition-all flex items-center gap-1 shadow-sm"
-              >
-                <Icon name="call" size={15} /> Call Client
-              </button>
-              
               <Link
                 href={`/customers`}
                 title="Open Ledger directory"
@@ -533,6 +507,39 @@ export default function CustomerConnect() {
               </span>
             </div>
 
+            {paymentProofReply && (
+              <div className="flex justify-start animate-fade-in">
+                <div className="max-w-[75%] space-y-1 sm:max-w-[65%]">
+                  <div className={`rounded-2xl rounded-tl-none border p-3 shadow-sm ${darkConsoleMode ? 'border-stone-700 bg-stone-800' : 'border-emerald-200 bg-white'}`}>
+                    <div className="mb-2 flex items-center gap-1.5 text-[8px] font-bold uppercase tracking-wider text-emerald-700">
+                      <Icon name="chat" size={10} /> WhatsApp · customer reply
+                    </div>
+                    <p className="mb-2 text-[12px] leading-relaxed">{paymentProofReply.note}</p>
+                    <div className="relative h-44 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50">
+                      <Image
+                        src={receiptBackground}
+                        alt="EasyPaisa-style payment receipt attachment"
+                        fill
+                        className="object-cover opacity-30"
+                        sizes="(max-width: 640px) 75vw, 320px"
+                      />
+                      <div className="relative flex h-full flex-col justify-between p-3 text-emerald-950">
+                        <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-wider">
+                          <span>EasyPaisa receipt</span>
+                          <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-white">Paid</span>
+                        </div>
+                        <div>
+                          <p className="font-mono text-xl font-extrabold tracking-tight">{paymentProofReply.amount}</p>
+                          <p className="mt-1 text-[10px] font-semibold">{paymentProofReply.date}</p>
+                          <p className="mt-1 text-[9px] text-emerald-800">Payment confirmation attached via WhatsApp</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {activeLogs.length === 0 ? (
               <p className="text-xs opacity-60 italic text-center py-8">
                 No past logs recorded for this client. Utilize quick templates to initiate payment outreach.
@@ -560,8 +567,8 @@ export default function CustomerConnect() {
                       >
                         {/* Channel Badge Indicator */}
                         <div className="flex items-center gap-1.5 mb-1.5 opacity-60 text-[8px] font-bold uppercase tracking-wider">
-                          <Icon name={log.type === 'Call' ? 'phone_callback' : log.type === 'SMS' ? 'sms' : 'chat'} size={10} />
-                          {log.type === 'Call' ? 'Voice Call Outcome' : log.type === 'SMS' ? 'SMS Outreach' : 'WhatsApp Outreach'}
+                          <Icon name={log.type === 'SMS' ? 'sms' : 'chat'} size={10} />
+                          {log.type === 'SMS' ? 'SMS Outreach' : 'WhatsApp Outreach'}
                         </div>
 
                         <p>{log.content}</p>
@@ -695,10 +702,7 @@ export default function CustomerConnect() {
               </div>
             )}
 
-            {/* Suggested Quick Outreach Action Templates (text templates are
-                irrelevant for voice Calls, so hide them in Call mode) */}
-            {commMode !== 'Call' && (
-              <div className={`rounded-xl border p-3 space-y-3 transition-colors duration-300 ${
+            <div className={`rounded-xl border p-3 space-y-3 transition-colors duration-300 ${
                 darkConsoleMode ? 'border-stone-800 bg-stone-900/40' : 'border-outline-variant/60 bg-surface-container-lowest'
               }`}>
                 <p className="text-[9px] font-extrabold opacity-60 uppercase tracking-widest">Suggested Outreach Templates</p>
@@ -736,16 +740,14 @@ export default function CustomerConnect() {
                     Stock / Promotional Offer
                   </button>
                 </div>
-              </div>
-            )}
+            </div>
             
             {/* Communication Channel Mode Selector */}
             <div className="flex gap-2 text-[10px] font-bold">
-              {(['WhatsApp', 'SMS', 'Call'] as const).map((mode) => {
+              {(['WhatsApp', 'SMS'] as const).map((mode) => {
                 const isSelected = commMode === mode;
                 let icon = 'chat';
                 if (mode === 'SMS') icon = 'sms';
-                if (mode === 'Call') icon = 'call';
                 
                 return (
                   <button
@@ -789,9 +791,7 @@ export default function CustomerConnect() {
                 required
                 type="text"
                 placeholder={
-                  commMode === 'Call'
-                    ? `Log voice call outcomes for ${activeCustomer.name}...`
-                    : commMode === 'SMS'
+                  commMode === 'SMS'
                     ? `Write SMS template to ${activeCustomer.name}...`
                     : `Write WhatsApp message to ${activeCustomer.name}...`
                 }
@@ -808,8 +808,8 @@ export default function CustomerConnect() {
                 type="submit"
                 className="px-4 py-2.5 bg-primary text-white rounded-xl hover:opacity-90 active:scale-95 transition-all flex items-center gap-1 text-[12px] font-bold hover:shadow-lg shadow-sm"
               >
-                <Icon name={commMode === 'Call' ? 'call' : commMode === 'SMS' ? 'sms' : 'send'} size={16} /> 
-                <span>{commMode === 'Call' ? 'Log Call' : 'Dispatch'}</span>
+                <Icon name={commMode === 'SMS' ? 'sms' : 'send'} size={16} /> 
+                <span>Dispatch</span>
               </button>
             </form>
           </div>
