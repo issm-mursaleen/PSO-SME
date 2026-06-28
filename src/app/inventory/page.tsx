@@ -13,9 +13,6 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
-  History,
-  Pencil,
   Truck,
   Wallet,
   ArrowDown,
@@ -23,10 +20,8 @@ import {
 import { Badge, Card, MetricCard, Table, TBody, Td, Th, THead, TRow } from '@/components/ui';
 import { useApp } from '@/context/AppContext';
 import { PurchaseDrawer } from '@/components/inventory/PurchaseDrawer';
-import { AdjustStockModal } from '@/components/inventory/AdjustStockModal';
 import { ProductModal } from '@/components/inventory/ProductModal';
 import { SupplierModal } from '@/components/inventory/SupplierModal';
-import { StockHistoryPanel } from '@/components/inventory/StockHistoryPanel';
 
 type WorkspaceTab = 'stock' | 'suppliers';
 
@@ -95,9 +90,6 @@ function InventoryWorkspace() {
   // ── Modal / drawer orchestration ────────────────────────────────────────
   const [restockSku, setRestockSku] = useState<string | null>(null);
   const [isGenericRestockOpen, setIsGenericRestockOpen] = useState(false);
-  const [adjustSku, setAdjustSku] = useState<string | null>(null);
-  const [historySku, setHistorySku] = useState<string | null>(null);
-  const [editingSku, setEditingSku] = useState<string | null>(null);
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [isAddSupplierOpen, setIsAddSupplierOpen] = useState(false);
 
@@ -217,7 +209,6 @@ function InventoryWorkspace() {
                       <Th>Product Name</Th>
                       <Th>Preferred Supplier</Th>
                       <Th className="text-right">Current Stock</Th>
-                      <Th className="text-right">Reorder Level</Th>
                       <Th>Status</Th>
                       <Th className="text-right">Actions</Th>
                     </tr>
@@ -225,7 +216,7 @@ function InventoryWorkspace() {
                   <TBody>
                     {filteredItems.length === 0 ? (
                       <TRow>
-                        <Td colSpan={7} className="text-center text-muted-foreground italic py-8">No products match the search.</Td>
+                        <Td colSpan={6} className="text-center text-muted-foreground italic py-8">No products match the search.</Td>
                       </TRow>
                     ) : (
                       filteredItems.map((item) => {
@@ -239,7 +230,6 @@ function InventoryWorkspace() {
                               {supplier ? supplier.name : <span className="italic text-outline">Unlinked</span>}
                             </Td>
                             <Td className="text-right font-mono font-bold text-foreground bg-muted/20">{item.current}</Td>
-                            <Td className="text-right font-mono text-muted-foreground">{item.reorder}</Td>
                             <Td>
                               <Badge tone={status.tone}>{status.label}</Badge>
                             </Td>
@@ -253,15 +243,6 @@ function InventoryWorkspace() {
                                 >
                                   <ArrowDown className="size-3" />
                                   Restock
-                                </button>
-                                <button type="button" onClick={() => setHistorySku(item.sku)} title="View stock history" className="size-7 inline-flex items-center justify-center rounded-lg border border-outline-variant text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
-                                  <History className="size-3.5" />
-                                </button>
-                                <button type="button" onClick={() => setAdjustSku(item.sku)} title="Adjust quantity" className="size-7 inline-flex items-center justify-center rounded-lg border border-outline-variant text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
-                                  <SlidersHorizontal className="size-3.5" />
-                                </button>
-                                <button type="button" onClick={() => setEditingSku(item.sku)} title="Edit product" className="size-7 inline-flex items-center justify-center rounded-lg border border-outline-variant text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
-                                  <Pencil className="size-3.5" />
                                 </button>
                               </div>
                             </Td>
@@ -472,33 +453,11 @@ function InventoryWorkspace() {
         />
       )}
 
-      {adjustSku && (
-        <AdjustStockModal
-          open
-          onClose={() => setAdjustSku(null)}
-          sku={adjustSku}
-          onAdjusted={() => triggerToast('Stock level adjusted.')}
-        />
-      )}
-
-      {historySku && (
-        <StockHistoryPanel open onClose={() => setHistorySku(null)} sku={historySku} />
-      )}
-
       {isAddProductOpen && (
         <ProductModal
           open
           onClose={() => setIsAddProductOpen(false)}
           onSaved={() => triggerToast('Product added to inventory.')}
-        />
-      )}
-
-      {editingSku && (
-        <ProductModal
-          open
-          onClose={() => setEditingSku(null)}
-          editingSku={editingSku}
-          onSaved={() => triggerToast('Product updated.')}
         />
       )}
 

@@ -141,14 +141,13 @@ export default function SupplierDetail({ params: paramsPromise }: { params: Prom
                 <Th>SKU</Th>
                 <Th>Product</Th>
                 <Th className="text-right">Current Stock</Th>
-                <Th className="text-right">Reorder Level</Th>
                 <Th>Status</Th>
               </tr>
             </THead>
             <TBody>
               {suppliedProducts.length === 0 ? (
                 <TRow>
-                  <Td colSpan={5} className="text-center text-muted-foreground italic py-8">
+                  <Td colSpan={4} className="text-center text-muted-foreground italic py-8">
                     No products linked to this supplier yet.
                   </Td>
                 </TRow>
@@ -160,7 +159,6 @@ export default function SupplierDetail({ params: paramsPromise }: { params: Prom
                       <Td className="font-mono text-xs font-semibold text-foreground">{item.sku}</Td>
                       <Td className="font-bold text-foreground whitespace-nowrap">{item.product}</Td>
                       <Td className="text-right font-mono font-bold">{item.current}</Td>
-                      <Td className="text-right font-mono text-muted-foreground">{item.reorder}</Td>
                       <Td><Badge tone={status.tone}>{status.label}</Badge></Td>
                     </TRow>
                   );

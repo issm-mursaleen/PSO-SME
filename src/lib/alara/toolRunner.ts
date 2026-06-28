@@ -25,7 +25,58 @@ export interface RunOutcome {
   pending: boolean;
 }
 
+function normalizeVisualizationCall(call: ToolCall): ToolCall {
+  if (call.name !== 'show_visualization') return call;
+
+  const kindAliases: Record<string, string> = {
+    sales: 'sales_trend',
+    sales_chart: 'sales_trend',
+    sales_trend: 'sales_trend',
+    trend: 'sales_trend',
+    top: 'top_customers',
+    customers: 'top_customers',
+    top_customers: 'top_customers',
+    products: 'product_mix',
+    product_mix: 'product_mix',
+    inventory: 'inventory_risk',
+    stock: 'inventory_risk',
+    inventory_risk: 'inventory_risk',
+    customer_split: 'customer_type_split',
+    customer_type_split: 'customer_type_split',
+    reorder: 'reorder_progress',
+    progress: 'reorder_progress',
+    reorder_progress: 'reorder_progress',
+  };
+  const chartAliases: Record<string, string> = {
+    pie: 'donut',
+    doughnut: 'donut',
+    donut: 'donut',
+    line: 'line',
+    trend: 'line',
+    area: 'line',
+    bar: 'bar',
+    column: 'bar',
+    progress: 'progress',
+    kpi: 'kpi',
+    metric: 'kpi',
+  };
+
+  const args = { ...call.args };
+  const kind = String(args.kind ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const chartType = String(args.chartType ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+  args.kind = kindAliases[kind] ?? 'sales_trend';
+  if (args.chartType != null && args.chartType !== '') {
+    const normalizedChartType = chartAliases[chartType];
+    if (normalizedChartType) args.chartType = normalizedChartType;
+    else delete args.chartType;
+  }
+
+  return { ...call, args };
+}
+
 export function runToolCall(call: ToolCall, ctx: AlaraToolContext): RunOutcome {
+  call = normalizeVisualizationCall(call);
   const tool = TOOL_BY_NAME[call.name];
   if (!tool) return { text: `"${call.name}" naam ka koi tool nahi.`, pending: false, status: 'failed' };
 

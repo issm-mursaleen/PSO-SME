@@ -68,6 +68,16 @@ PLAN_SYSTEM_PROMPT = (
     "highest LIFETIME SALES value (query_data top_by_sales). For a 360° question about one "
     "customer call `customer_insight`; for shop-wide ranking call `query_data`. These tools "
     "return the figures, context and recommended actions — so do NOT invent numbers yourself.\n\n"
+    "INVENTORY & SUPPLIERS — you also know the shop's full inventory and supplier directory. "
+    "For one product's stock/reorder/preferred-supplier use `get_product`; for a filtered product "
+    "list (low_stock/out_of_stock/all) use `list_inventory`. For one supplier's contact info, "
+    "lifetime purchases, products supplied and outstanding drafts use `get_supplier`; for the "
+    "supplier directory use `list_suppliers`. These are real, live data — never invent stock "
+    "levels or supplier figures.\n\n"
+    "VISUALIZATIONS — call `show_visualization` with an explicit `chartType` using this rule: "
+    "ONE number → kpi. Comparison between items → bar. Change over time → line. Percentage split "
+    "of a whole → donut. Progress toward a target → progress. Only set `chartType` when the user's "
+    "wording implies a specific style; otherwise omit it and let the `kind` pick its natural default.\n\n"
     "PROGRESSIVE DISCLOSURE: simple question = short direct answer; analytical question = "
     "answer + supporting metrics; full-profile request = detailed customer card. When you add "
     "a short reply for an analytical question, follow this order: (1) seedha jawab, (2) key "
@@ -195,6 +205,25 @@ def _plan_fallback(message: str) -> PlanOut:
         dm = re.search(r"(\d+)\s*(din|day)", low)
         idle = int(dm.group(1)) if dm else 7
         return call("list_customers", {"filter": "inactive", "idle_days": idle})
+
+    # Dynamic visualization cards: charts/graphs with explanations + suggested actions.
+    # Keep this in backend fallback because /api/plan can return fallback successfully,
+    # which means the frontend's local fallback is not used.
+    if re.search(
+        r"(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison|split|percentage|share|progress|target|goal)",
+        low,
+    ):
+        if re.search(r"(progress|target|goal)", low) and re.search(r"(inventory|stock|sku|reorder|low)", low):
+            return call("show_visualization", {"kind": "reorder_progress"})
+        if re.search(r"(split|percentage|share)", low) and re.search(r"(customer|grahak|client|type|segment)", low):
+            return call("show_visualization", {"kind": "customer_type_split"})
+        if re.search(r"(inventory|stock|sku|reorder|low)", low):
+            return call("show_visualization", {"kind": "inventory_risk"})
+        if re.search(r"(product|item|sku|mix)", low):
+            return call("show_visualization", {"kind": "product_mix"})
+        if re.search(r"(customer|grahak|client|top|best)", low):
+            return call("show_visualization", {"kind": "top_customers"})
+        return call("show_visualization", {"kind": "sales_trend"})
 
     if re.search(r"(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)", low):
         cust = _name_before(text, r"ke|ka|ki|ko|for")

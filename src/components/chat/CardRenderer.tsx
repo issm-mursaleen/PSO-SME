@@ -7,9 +7,10 @@
 import { useState, type ReactNode } from 'react';
 import {
   Send, Copy, Check, ShoppingCart, UserPlus, AlertTriangle, ArrowRight, Package, Users,
-  Lightbulb, AlertCircle, Sparkles, ChevronRight, BarChart3, TrendingUp,
+  Lightbulb, AlertCircle, Sparkles, ChevronRight, BarChart3, TrendingUp, LineChart, PieChart, Target,
 } from 'lucide-react';
 import type { AlaraChatMessage, CardData } from '@/lib/alara/types';
+import { VisualizationCard as BetterVisualizationCard } from './VisualizationCard';
 
 export interface CardActions {
   onConfirm: (messageId: string) => void;
@@ -404,9 +405,152 @@ function InsightCard({ msg, actions }: CardProps) {
   );
 }
 
-// ── navigate ──────────────────────────────────────────────────────────────────
-type VisualPoint = { label: string; value: number; meta?: string; tone?: string };
+// ── visualization (kpi / bar / line / donut / progress) ──────────────────────
+type VisualPoint = { label: string; value: number; target?: number; meta?: string; tone?: string };
 
+const toneClass = (tone?: string) =>
+  tone === 'urgent' ? 'bg-danger' : tone === 'opportunity' ? 'bg-success' : 'bg-primary';
+const DONUT_PALETTE = [
+  'var(--color-primary)',
+  'var(--color-success)',
+  'var(--color-warning)',
+  'var(--color-info)',
+  'var(--color-danger)',
+  'var(--color-secondary)',
+];
+
+const CHART_META: Record<string, { icon: typeof BarChart3; label: string }> = {
+  kpi: { icon: BarChart3, label: 'Live data' },
+  bar: { icon: BarChart3, label: 'Live data' },
+  line: { icon: LineChart, label: 'Live trend' },
+  donut: { icon: PieChart, label: 'Live split' },
+  progress: { icon: Target, label: 'Live progress' },
+};
+
+function BarPoints({ points }: { points: VisualPoint[] }) {
+  const max = Math.max(1, ...points.map((p) => Number(p.value)));
+  return (
+    <div className="space-y-2.5 p-3">
+      {points.map((p, i) => {
+        const width = Math.max(6, Math.round((Number(p.value) / max) * 100));
+        return (
+          <div key={`${p.label}-${i}`} className="space-y-1">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate font-medium text-foreground">{p.label}</span>
+              <span className="shrink-0 font-mono tabular-nums text-muted-foreground">{p.meta ?? p.value.toLocaleString()}</span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-container-high">
+              <div className={`h-full rounded-full ${toneClass(p.tone)}`} style={{ width: `${width}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProgressPoints({ points }: { points: VisualPoint[] }) {
+  return (
+    <div className="space-y-2.5 p-3">
+      {points.map((p, i) => {
+        const target = Math.max(1, Number(p.target ?? p.value) || 1);
+        const pct = Math.max(2, Math.min(100, Math.round((Number(p.value) / target) * 100)));
+        return (
+          <div key={`${p.label}-${i}`} className="space-y-1">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate font-medium text-foreground">{p.label}</span>
+              <span className="shrink-0 font-mono tabular-nums text-muted-foreground">{p.meta ?? `${p.value}/${target}`}</span>
+            </div>
+            <div className="relative h-2.5 overflow-hidden rounded-full bg-surface-container-high">
+              <div className={`h-full rounded-full ${toneClass(p.tone)}`} style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LinePoints({ points }: { points: VisualPoint[] }) {
+  const max = Math.max(1, ...points.map((p) => Number(p.value)));
+  const min = Math.min(0, ...points.map((p) => Number(p.value)));
+  const range = Math.max(1, max - min);
+  const n = points.length;
+  const coords = points.map((p, i) => ({
+    x: n > 1 ? (i / (n - 1)) * 100 : 50,
+    y: 36 - ((Number(p.value) - min) / range) * 32,
+  }));
+  const path = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  return (
+    <div className="p-3">
+      <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-28 w-full">
+        <path d={path} fill="none" stroke="var(--color-primary)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+        {coords.map((c, i) => (
+          <circle key={i} cx={c.x} cy={c.y} r="1.6" fill="var(--color-primary)" />
+        ))}
+      </svg>
+      <div className="mt-1 flex items-center justify-between gap-1">
+        {points.map((p, i) => (
+          <div key={`${p.label}-${i}`} className="min-w-0 flex-1 text-center">
+            <p className="truncate text-[9px] font-medium text-muted-foreground">{p.label}</p>
+            <p className="truncate font-mono text-[10px] font-bold text-foreground">{p.meta ?? p.value.toLocaleString()}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DonutPoints({ points }: { points: VisualPoint[] }) {
+  const total = Math.max(1, points.reduce((s, p) => s + Number(p.value), 0));
+  const r = 15.9155; // circumference ≈ 100, so each % = 1 unit of stroke-dasharray
+  const pcts = points.map((p) => (Number(p.value) / total) * 100);
+  const segments = points.map((p, i) => {
+    const pct = pcts[i];
+    const before = pcts.slice(0, i).reduce((s, v) => s + v, 0);
+    return {
+      ...p,
+      pct,
+      dashArray: `${pct} ${100 - pct}`,
+      dashOffset: 25 - before, // start at 12 o'clock, go clockwise
+      color: DONUT_PALETTE[i % DONUT_PALETTE.length],
+    };
+  });
+  return (
+    <div className="flex items-center gap-4 p-3">
+      <svg viewBox="0 0 40 40" className="size-24 shrink-0 -rotate-90">
+        {segments.map((s, i) => (
+          <circle
+            key={i}
+            cx="20"
+            cy="20"
+            r={r}
+            fill="none"
+            stroke={s.color}
+            strokeWidth="7"
+            strokeDasharray={s.dashArray}
+            strokeDashoffset={s.dashOffset}
+          />
+        ))}
+      </svg>
+      <div className="min-w-0 flex-1 space-y-1.5">
+        {segments.map((s, i) => (
+          <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="flex min-w-0 items-center gap-1.5 truncate">
+              <span className="size-2 shrink-0 rounded-full" style={{ background: s.color }} />
+              <span className="truncate font-medium text-foreground">{s.label}</span>
+            </span>
+            <span className="shrink-0 font-mono tabular-nums text-muted-foreground">
+              {s.meta ?? `${Math.round(s.pct)}%`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function VisualizationCard({ msg, actions }: CardProps) {
   const d = msg.cardData ?? {};
   const points = Array.isArray(d.points)
@@ -415,52 +559,46 @@ function VisualizationCard({ msg, actions }: CardProps) {
   const stats = Array.isArray(d.stats) ? (d.stats as { label: string; value: unknown }[]) : [];
   const explanation = Array.isArray(d.explanation) ? (d.explanation as string[]) : [];
   const steps = Array.isArray(d.steps) ? (d.steps as Step[]) : [];
-  const max = Math.max(1, ...points.map((p) => Number(p.value)));
+  const chartType = str(d.chartType) || 'bar';
+  const meta = CHART_META[chartType] ?? CHART_META.bar;
+  const HeaderIcon = meta.icon;
 
   return (
     <div className="mt-3 overflow-hidden rounded-2xl border border-outline-variant bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.16),transparent_34%),linear-gradient(135deg,var(--surface-container-lowest),var(--surface-container-low))] shadow-sm">
       <div className="flex items-center justify-between gap-3 border-b border-outline-variant/80 px-3 py-2.5">
         <span className={headLabel}>
-          <BarChart3 className="inline size-3 mr-1 -mt-0.5 text-primary" />{str(d.title) || 'Visualization'}
+          <HeaderIcon className="inline size-3 mr-1 -mt-0.5 text-primary" />{str(d.title) || 'Visualization'}
         </span>
         <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-widest text-primary">
-          <TrendingUp className="size-3" /> Live data
+          <TrendingUp className="size-3" /> {meta.label}
         </span>
       </div>
 
       {stats.length > 0 && (
-        <div className="grid grid-cols-2 gap-2 border-b border-outline-variant/80 p-3 sm:grid-cols-3">
+        <div className={`grid gap-2 border-b border-outline-variant/80 p-3 ${chartType === 'kpi' ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-3'}`}>
           {stats.map((s, i) => (
             <div key={i} className="rounded-xl border border-outline-variant/80 bg-white/55 p-2.5">
               <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">{s.label}</p>
-              <p className="mt-1 text-xs font-bold tabular-nums text-foreground">{str(s.value)}</p>
+              <p className={`mt-1 font-bold tabular-nums text-foreground ${chartType === 'kpi' ? 'text-lg' : 'text-xs'}`}>{str(s.value)}</p>
             </div>
           ))}
         </div>
       )}
 
-      {points.length > 0 ? (
-        <div className="space-y-2.5 p-3">
-          {points.map((p, i) => {
-            const width = Math.max(6, Math.round((Number(p.value) / max) * 100));
-            return (
-              <div key={`${p.label}-${i}`} className="space-y-1">
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="min-w-0 truncate font-medium text-foreground">{p.label}</span>
-                  <span className="shrink-0 font-mono tabular-nums text-muted-foreground">{p.meta ?? p.value.toLocaleString()}</span>
-                </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-surface-container-high">
-                  <div
-                    className={`h-full rounded-full ${p.tone === 'urgent' ? 'bg-danger' : p.tone === 'opportunity' ? 'bg-success' : 'bg-primary'}`}
-                    style={{ width: `${width}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="p-3 text-xs text-muted-foreground">Visualization ke liye abhi data available nahi.</div>
+      {chartType !== 'kpi' && (
+        points.length > 0 ? (
+          chartType === 'line' ? (
+            <LinePoints points={points} />
+          ) : chartType === 'donut' ? (
+            <DonutPoints points={points} />
+          ) : chartType === 'progress' ? (
+            <ProgressPoints points={points} />
+          ) : (
+            <BarPoints points={points} />
+          )
+        ) : (
+          <div className="p-3 text-xs text-muted-foreground">Visualization ke liye abhi data available nahi.</div>
+        )
       )}
 
       {explanation.length > 0 && (
@@ -507,7 +645,7 @@ const CARDS: Record<string, (p: CardProps) => ReactNode> = {
   disambiguation: DisambiguationCard,
   next_steps: NextStepsCard,
   insight: InsightCard,
-  visualization: VisualizationCard,
+  visualization: BetterVisualizationCard,
   navigate: NavigateCard,
 };
 

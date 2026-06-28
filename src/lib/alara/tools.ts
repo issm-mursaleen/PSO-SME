@@ -14,7 +14,8 @@
 // credit/udhar concept. Customers are ranked by lifetime sales and recency.
 
 import type { AlaraTool, AlaraToolContext, ToolResult } from './types';
-import type { Customer } from '@/context/AppContext';
+import type { Customer, StockItem, Supplier } from '@/context/AppContext';
+import { MAX_BATCH } from './guardrails';
 
 const pkr = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
 
@@ -72,6 +73,7 @@ function disambiguation(
     cardData: {
       query,
       forTool: toolName,
+      argKey: 'customer',
       baseArgs,
       candidates: candidates.slice(0, 6).map((c) => ({
         id: c.id,
@@ -80,6 +82,67 @@ function disambiguation(
       })),
     },
   };
+}
+
+/** Same disambiguation flow as above, generalised for products/suppliers —
+ *  `argKey` tells useAlaraChat's pickCandidate which arg to re-fill on re-run. */
+function disambiguationGeneric(
+  toolName: string,
+  baseArgs: Record<string, unknown>,
+  query: string,
+  argKey: string,
+  label: string,
+  candidates: { id: string; name: string; meta?: string }[],
+): ToolResult {
+  return {
+    ok: false,
+    text: `Kaunsa "${query}"? Ek ${label} choose karein.`,
+    error: 'ambiguous_match',
+    cardType: 'disambiguation',
+    cardData: {
+      query,
+      forTool: toolName,
+      argKey,
+      baseArgs,
+      candidates: candidates.slice(0, 6),
+    },
+  };
+}
+
+// ── Product resolution (by name or SKU) ──────────────────────────────────────
+interface ResolveProductResult {
+  item?: StockItem;
+  candidates?: StockItem[];
+}
+function resolveProduct(query: string, inventory: StockItem[]): ResolveProductResult {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return {};
+  const bySku = inventory.find((i) => i.sku.toLowerCase() === q);
+  if (bySku) return { item: bySku };
+  const exact = inventory.find((i) => i.product.toLowerCase() === q);
+  if (exact) return { item: exact };
+  const substring = inventory.filter(
+    (i) => i.product.toLowerCase().includes(q) || i.sku.toLowerCase().includes(q),
+  );
+  if (substring.length === 1) return { item: substring[0] };
+  if (substring.length > 1) return { candidates: substring };
+  return {};
+}
+
+// ── Supplier resolution (by name) ────────────────────────────────────────────
+interface ResolveSupplierResult {
+  supplier?: Supplier;
+  candidates?: Supplier[];
+}
+function resolveSupplier(query: string, suppliers: Supplier[]): ResolveSupplierResult {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return {};
+  const exact = suppliers.find((s) => s.name.toLowerCase() === q);
+  if (exact) return { supplier: exact };
+  const substring = suppliers.filter((s) => s.name.toLowerCase().includes(q));
+  if (substring.length === 1) return { supplier: substring[0] };
+  if (substring.length > 1) return { candidates: substring };
+  return {};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,6 +417,213 @@ const listCustomers: AlaraTool = {
   },
 };
 
+// ── Inventory: single product + listing ──────────────────────────────────────
+const getProduct: AlaraTool = {
+  name: 'get_product',
+  tier: 'read',
+  description:
+    "Show one inventory product's details: current stock, reorder level, status, " +
+    'preferred supplier, and its most recent stock movement. Look up by product name or SKU.',
+  parameters: {
+    type: 'object',
+    properties: { product: { type: 'string', description: 'Product name or SKU' } },
+    required: ['product'],
+  },
+  preview: (args, ctx) => {
+    const query = String(args.product ?? '');
+    const { item, candidates } = resolveProduct(query, ctx.inventory);
+    if (candidates)
+      return disambiguationGeneric(
+        'get_product',
+        args,
+        query,
+        'product',
+        'product',
+        candidates.map((c) => ({ id: c.sku, name: c.product, meta: `${c.sku} · ${c.current} in stock` })),
+      );
+    if (!item) return err(`"${query}" naam ka koi product nahi mila.`, 'product_not_found');
+
+    const supplier = ctx.suppliers.find((s) => s.id === item.supplierId);
+    const status = item.current <= 0 ? 'Out of Stock' : item.current <= item.reorder ? 'Low Stock' : 'Healthy';
+    const lastMovement = ctx.stockMovements
+      .filter((m) => m.sku === item.sku)
+      .slice()
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+
+    return {
+      ok: true,
+      text: `${item.product} — ${item.current} units in stock (reorder level ${item.reorder}), status ${status}.`,
+      cardType: 'metric',
+      cardData: {
+        title: item.product,
+        stats: [
+          { label: 'Current Stock', value: item.current },
+          { label: 'Reorder Level', value: item.reorder },
+          { label: 'Status', value: status },
+          { label: 'Preferred Supplier', value: supplier?.name ?? 'Not set' },
+          { label: 'SKU', value: item.sku },
+          ...(lastMovement
+            ? [{ label: 'Last Movement', value: `${lastMovement.type} (${lastMovement.quantity > 0 ? '+' : ''}${lastMovement.quantity})` }]
+            : []),
+        ],
+      },
+      data: { sku: item.sku },
+    };
+  },
+};
+
+const listInventory: AlaraTool = {
+  name: 'list_inventory',
+  tier: 'read',
+  description: 'List inventory products, optionally filtered: all, low_stock, or out_of_stock.',
+  parameters: {
+    type: 'object',
+    properties: {
+      filter: { type: 'string', enum: ['all', 'low_stock', 'out_of_stock'] },
+      limit: { type: 'integer' },
+    },
+  },
+  preview: (args, ctx) => {
+    const filter = String(args.filter ?? 'all');
+    const limit = Math.min(Number(args.limit ?? 20) || 20, 50);
+    let rows = ctx.inventory.slice();
+    if (filter === 'low_stock') rows = rows.filter((i) => i.current > 0 && i.current <= i.reorder);
+    if (filter === 'out_of_stock') rows = rows.filter((i) => i.current <= 0);
+    rows.sort((a, b) => a.current - a.reorder - (b.current - b.reorder));
+    rows = rows.slice(0, limit);
+    return {
+      ok: true,
+      text: `${rows.length} products (${filter === 'all' ? 'all' : filter.replace('_', ' ')}).`,
+      cardType: 'list',
+      cardData: {
+        title: `Inventory — ${filter === 'all' ? 'all products' : filter.replace('_', ' ')}`,
+        rows: rows.map((i) => ({
+          primary: i.product,
+          secondary: `${i.sku} · ${i.category}`,
+          meta: `${i.current}/${i.reorder}`,
+        })),
+      },
+      data: { skus: rows.map((i) => i.sku) },
+    };
+  },
+};
+
+// ── Suppliers: single supplier + listing ─────────────────────────────────────
+const getSupplier: AlaraTool = {
+  name: 'get_supplier',
+  tier: 'read',
+  description:
+    "Give a 360° view of one supplier: contact info, category, lifetime purchases, " +
+    'products supplied, and outstanding draft invoices. Look up by supplier name.',
+  parameters: {
+    type: 'object',
+    properties: { supplier: { type: 'string', description: 'Supplier name or part of the name' } },
+    required: ['supplier'],
+  },
+  preview: (args, ctx) => {
+    const query = String(args.supplier ?? '');
+    const { supplier, candidates } = resolveSupplier(query, ctx.suppliers);
+    if (candidates)
+      return disambiguationGeneric(
+        'get_supplier',
+        args,
+        query,
+        'supplier',
+        'supplier',
+        candidates.map((s) => ({ id: s.id, name: s.name, meta: `${s.category} · ${s.status}` })),
+      );
+    if (!supplier) return err(`"${query}" naam ka koi supplier nahi mila.`, 'supplier_not_found');
+
+    const invoices = ctx.supplierInvoices.filter((inv) => inv.supplierId === supplier.id);
+    const paid = invoices.filter((inv) => inv.status === 'Paid');
+    const drafts = invoices.filter((inv) => inv.status === 'Draft');
+    const lifetime = paid.reduce((s, inv) => s + inv.amount, 0);
+    const outstanding = drafts.reduce((s, inv) => s + inv.amount, 0);
+    const products = ctx.inventory.filter((i) => i.supplierId === supplier.id);
+    const lastInvoice = invoices.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
+
+    const context: string[] = [
+      `Contact: ${supplier.contactPerson || '—'} · ${supplier.phone}`,
+      `Category: ${supplier.category}`,
+    ];
+    if (lastInvoice) context.push(`Last purchase ${lastInvoice.date} — ${pkr(lastInvoice.amount)} (${lastInvoice.status}).`);
+    if (products.length) context.push(`Supplies: ${products.map((p) => p.product).join(', ')}.`);
+
+    const risks: string[] = [];
+    if (drafts.length)
+      risks.push(`${drafts.length} draft purchase(s) worth ${pkr(outstanding)} abhi confirm/receive nahi hui.`);
+
+    return {
+      ok: true,
+      text:
+        lifetime > 0
+          ? `${supplier.name} se lifetime ${pkr(lifetime)} ka purchase hua hai (${paid.length} invoices), ${products.length} products supply karte hain.`
+          : `${supplier.name} se abhi tak koi confirmed purchase nahi.`,
+      cardType: 'insight',
+      cardData: {
+        title: supplier.name,
+        stats: [
+          { label: 'Lifetime Purchases', value: pkr(lifetime) },
+          { label: 'Products Supplied', value: products.length },
+          { label: 'Purchase Invoices', value: invoices.length },
+          { label: 'Outstanding', value: pkr(outstanding) },
+          { label: 'Status', value: supplier.status },
+        ],
+        context,
+        risks,
+        steps: [
+          {
+            label: `${supplier.name} ka page kholo`,
+            prompt: `${supplier.name} ka supplier page kholo`,
+            reason: 'Full purchase history dekhein',
+            tone: 'normal',
+          },
+        ],
+      },
+      data: { supplier_id: supplier.id },
+    };
+  },
+};
+
+const listSuppliers: AlaraTool = {
+  name: 'list_suppliers',
+  tier: 'read',
+  description: 'List suppliers, optionally filtered: all or active. Sorted by lifetime (paid) purchases.',
+  parameters: {
+    type: 'object',
+    properties: {
+      filter: { type: 'string', enum: ['all', 'active'] },
+      limit: { type: 'integer' },
+    },
+  },
+  preview: (args, ctx) => {
+    const filter = String(args.filter ?? 'all');
+    const limit = Math.min(Number(args.limit ?? 20) || 20, 50);
+    const lifetimeOf = (s: Supplier) =>
+      ctx.supplierInvoices
+        .filter((inv) => inv.supplierId === s.id && inv.status === 'Paid')
+        .reduce((sum, inv) => sum + inv.amount, 0);
+    let rows = ctx.suppliers.slice();
+    if (filter === 'active') rows = rows.filter((s) => s.status === 'Active');
+    rows.sort((a, b) => lifetimeOf(b) - lifetimeOf(a));
+    rows = rows.slice(0, limit);
+    return {
+      ok: true,
+      text: `${rows.length} suppliers (${filter}).`,
+      cardType: 'list',
+      cardData: {
+        title: `Suppliers — ${filter}`,
+        rows: rows.map((s) => ({
+          primary: s.name,
+          secondary: s.category,
+          meta: pkr(lifetimeOf(s)),
+        })),
+      },
+      data: { supplier_ids: rows.map((s) => s.id) },
+    };
+  },
+};
+
 // ── Per-customer analytics (sales + behaviour) ───────────────────────────────
 interface CustomerStats {
   lifetime: number;   // total sales value (sum of this customer's invoices)
@@ -447,7 +717,7 @@ const customerInsight: AlaraTool = {
       s.orders === 0
         ? `${customer.name} ka abhi tak koi recorded business nahi.`
         : `${customer.name} ne lifetime ${pkr(s.lifetime)} ka business diya (${s.orders} orders). ` +
-          `Aakhri visit ${customer.lastVisitDays} din pehle.`;
+        `Aakhri visit ${customer.lastVisitDays} din pehle.`;
 
     return {
       ok: true,
@@ -574,15 +844,26 @@ const showVisualization: AlaraTool = {
   tier: 'read',
   description:
     'Show a dynamic visualization card in chat with live data, explanatory notes, and suggested next actions. ' +
-    'Use this when the user asks for a chart, graph, visual, trend, comparison, breakdown, or dashboard-style answer. ' +
-    'Kinds: sales_trend, top_customers, product_mix, inventory_risk.',
+    'Use this when the user asks for a chart, graph, visual, trend, comparison, breakdown, split, or progress-style answer. ' +
+    'Kinds (which DATASET to pull): sales_trend, top_customers, product_mix, inventory_risk, customer_type_split, reorder_progress. ' +
+    'chartType (HOW to render it) — pick using this rule: ONE number → kpi. Comparison between items → bar. ' +
+    'Change over time → line. Percentage split of a whole → donut. Progress toward a target → progress. ' +
+    "If chartType is omitted, each kind renders with its natural default (sales_trend→line, top_customers/product_mix/inventory_risk→bar, " +
+    'customer_type_split→donut, reorder_progress→progress) — only override chartType when the user explicitly asks for a different chart style.',
   parameters: {
     type: 'object',
     properties: {
       kind: {
         type: 'string',
-        enum: ['sales_trend', 'top_customers', 'product_mix', 'inventory_risk'],
-        description: 'Which visualization to render.',
+        enum: ['sales_trend', 'top_customers', 'product_mix', 'inventory_risk', 'customer_type_split', 'reorder_progress'],
+        description: 'Which dataset to visualize.',
+      },
+      chartType: {
+        type: 'string',
+        enum: ['kpi', 'bar', 'line', 'donut', 'progress'],
+        description:
+          'How to render it: kpi (one number), bar (comparison between items), line (change over time), ' +
+          'donut (percentage split), progress (progress toward a target). Omit to use the kind’s natural default.',
       },
       limit: { type: 'integer', description: 'Number of bars/rows to show. Default 6.' },
     },
@@ -591,6 +872,7 @@ const showVisualization: AlaraTool = {
   preview: (args, ctx) => {
     const kind = String(args.kind ?? 'sales_trend');
     const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 3), 10);
+    const chartTypeOverride = args.chartType ? String(args.chartType) : undefined;
 
     if (kind === 'sales_trend') {
       const dated = ctx.invoices
@@ -619,6 +901,7 @@ const showVisualization: AlaraTool = {
         cardType: 'visualization',
         cardData: {
           title: 'Sales Trend',
+          chartType: chartTypeOverride ?? 'line',
           stats: [
             { label: 'Shown Total', value: pkr(total) },
             { label: 'Invoices', value: dated.length },
@@ -652,6 +935,7 @@ const showVisualization: AlaraTool = {
         cardType: 'visualization',
         cardData: {
           title: 'Top Customers by Lifetime Sales',
+          chartType: chartTypeOverride ?? 'bar',
           stats: [
             { label: 'Customers', value: ranked.length },
             { label: 'Shown Revenue', value: pkr(total) },
@@ -669,9 +953,9 @@ const showVisualization: AlaraTool = {
           ],
           steps: top
             ? [
-                { label: `${top.c.name} ka profile kholo`, prompt: `${top.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
-                { label: 'Product mix visualization dikhao', prompt: 'Product mix ka visualization dikhao', reason: 'Kya items bik rahe hain', tone: 'opportunity' },
-              ]
+              { label: `${top.c.name} ka profile kholo`, prompt: `${top.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
+              { label: 'Product mix visualization dikhao', prompt: 'Product mix ka visualization dikhao', reason: 'Kya items bik rahe hain', tone: 'opportunity' },
+            ]
             : [{ label: 'Record sale', prompt: 'Record sale page kholo', reason: 'Ranking banane ke liye sales chahiye', tone: 'normal' }],
         },
         data: { kind, customer_ids: ranked.map((r) => r.c.id) },
@@ -699,6 +983,7 @@ const showVisualization: AlaraTool = {
         cardType: 'visualization',
         cardData: {
           title: 'Product Mix by Revenue',
+          chartType: chartTypeOverride ?? 'bar',
           stats: [
             { label: 'Products', value: ranked.length },
             { label: 'Shown Revenue', value: pkr(total) },
@@ -723,6 +1008,85 @@ const showVisualization: AlaraTool = {
       };
     }
 
+    if (kind === 'customer_type_split') {
+      const byType = new Map<string, number>();
+      for (const c of ctx.customers) {
+        const lifetime = lifetimeSales(c, ctx);
+        if (lifetime <= 0) continue;
+        byType.set(c.type, (byType.get(c.type) ?? 0) + lifetime);
+      }
+      const ranked = Array.from(byType.entries())
+        .map(([type, value]) => ({ type, value }))
+        .sort((a, b) => b.value - a.value);
+      const total = ranked.reduce((s, r) => s + r.value, 0);
+      const leader = ranked[0];
+      return {
+        ok: true,
+        text: `Customer type split ready — ${ranked.length} segments, total ${pkr(total)}.`,
+        cardType: 'visualization',
+        cardData: {
+          title: 'Sales Split by Customer Type',
+          chartType: chartTypeOverride ?? 'donut',
+          stats: [
+            { label: 'Segments', value: ranked.length },
+            { label: 'Total', value: pkr(total) },
+            { label: 'Leading Segment', value: leader?.type ?? '—' },
+          ],
+          points: ranked.map((r) => ({
+            label: r.type,
+            value: r.value,
+            meta: `${pkr(r.value)} · ${total > 0 ? Math.round((r.value / total) * 100) : 0}%`,
+            tone: 'normal',
+          })),
+          explanation: [
+            'Split har customer ki lifetime sales ko unke type (Household/Retailer/Wholesaler) ke hisaab se group karta hai.',
+            leader ? `${leader.type} segment total revenue ka sab se bada hissa hai.` : 'Abhi koi sales data available nahi.',
+          ],
+          steps: [
+            { label: 'Top customers ka chart dikhao', prompt: 'Top customers ka visualization dikhao', reason: 'Konse individual customers lead kar rahe hain', tone: 'normal' },
+          ],
+        },
+        data: { kind, segments: ranked.map((r) => r.type) },
+      };
+    }
+
+    if (kind === 'reorder_progress') {
+      const low = ctx.inventory.filter((i) => i.current <= i.reorder);
+      const ranked = low
+        .slice()
+        .sort((a, b) => a.current / Math.max(1, a.reorder) - b.current / Math.max(1, b.reorder))
+        .slice(0, limit);
+      return {
+        ok: true,
+        text: `Reorder progress ready — ${low.length} SKUs below their reorder target.`,
+        cardType: 'visualization',
+        cardData: {
+          title: 'Stock vs Reorder Target',
+          chartType: chartTypeOverride ?? 'progress',
+          stats: [
+            { label: 'Below Target', value: low.length },
+            { label: 'SKUs Checked', value: ctx.inventory.length },
+            { label: 'Most Urgent', value: ranked[0]?.product ?? '—' },
+          ],
+          points: ranked.map((item) => ({
+            label: item.product,
+            value: item.current,
+            target: item.reorder,
+            meta: `${item.current}/${item.reorder} units`,
+            tone: item.current <= 0 ? 'urgent' : 'normal',
+          })),
+          explanation: [
+            'Har bar current stock ko us SKU ke reorder target ke against dikhata hai — jitna chhota bar, utni jaldi restock chahiye.',
+            ranked.length ? `${ranked[0].product} sab se zyada urgent hai.` : 'Sab SKUs apne reorder target par ya us se upar hain.',
+          ],
+          steps: ranked[0]
+            ? [{ label: `${ranked[0].product} stock in karo`, prompt: `${ranked[0].product} ka stock add karo`, reason: `${ranked[0].current} units left`, tone: 'urgent' }]
+            : [{ label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Stock detail dekhein', tone: 'normal' }],
+        },
+        data: { kind, low_stock: low.length },
+      };
+    }
+
     const ranked = ctx.inventory
       .map((i) => ({
         item: i,
@@ -738,6 +1102,7 @@ const showVisualization: AlaraTool = {
       cardType: 'visualization',
       cardData: {
         title: 'Inventory Risk',
+        chartType: chartTypeOverride ?? 'bar',
         stats: [
           { label: 'Low Stock', value: low.length },
           { label: 'SKUs Checked', value: ctx.inventory.length },
@@ -755,9 +1120,9 @@ const showVisualization: AlaraTool = {
         ],
         steps: ranked[0]
           ? [
-              { label: `${ranked[0].item.product} stock in karo`, prompt: `${ranked[0].item.product} ka stock add karo`, reason: `${ranked[0].item.current} units left`, tone: 'urgent' },
-              { label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Full stock table dekhein', tone: 'normal' },
-            ]
+            { label: `${ranked[0].item.product} stock in karo`, prompt: `${ranked[0].item.product} ka stock add karo`, reason: `${ranked[0].item.current} units left`, tone: 'urgent' },
+            { label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Full stock table dekhein', tone: 'normal' },
+          ]
           : [{ label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Stock detail dekhein', tone: 'normal' }],
       },
       data: { kind, low_stock: low.length },
@@ -1226,15 +1591,20 @@ const bulkRemind: AlaraTool = {
     let targets = ctx.customers.slice();
     if (filter === 'inactive') targets = targets.filter((c) => c.lastVisitDays >= idle);
     if (targets.length === 0) return err('Is filter pe koi customer nahi mila.', 'empty_batch');
+    const matched = targets.length;
+    const capped = targets.slice(0, MAX_BATCH); // what commit will actually act on
+    const truncated = matched > capped.length;
     return {
       ok: true,
-      text: `${targets.length} customers ko outreach message bhejna hai. Confirm karein.`,
+      text: truncated
+        ? `${matched} customers match hue, lekin ek baar mein sirf ${MAX_BATCH} ko message bheja ja sakta hai. Pehle ${capped.length} ko confirm karein.`
+        : `${capped.length} customers ko outreach message bhejna hai. Confirm karein.`,
       cardType: 'list',
       cardData: {
         title: `Bulk outreach — ${filter === 'inactive' ? `inactive ${idle}d+` : 'all'}`,
         destructive: true,
-        count: targets.length,
-        rows: targets.slice(0, 25).map((c) => ({
+        count: capped.length,
+        rows: capped.map((c) => ({
           primary: c.name,
           secondary: c.phone,
           meta: `${c.lastVisitDays}d ago`,
@@ -1248,7 +1618,7 @@ const bulkRemind: AlaraTool = {
     const idle = Number(args.idle_days ?? 14) || 14;
     let targets = ctx.customers.slice();
     if (filter === 'inactive') targets = targets.filter((c) => c.lastVisitDays >= idle);
-    targets = targets.slice(0, 25); // batch cap
+    targets = targets.slice(0, MAX_BATCH); // batch cap, same source of truth as preview
     for (const c of targets) ctx.sendWhatsAppReminder(c.id, buildReminder(c), 'WhatsApp');
     return { ok: true, text: `${targets.length} outreach messages log kar diye.` };
   },
@@ -1262,6 +1632,10 @@ export const TOOLS: AlaraTool[] = [
   customerVisit,
   customerInsight,
   listCustomers,
+  getProduct,
+  listInventory,
+  getSupplier,
+  listSuppliers,
   listAlerts,
   showVisualization,
   suggestNextSteps,

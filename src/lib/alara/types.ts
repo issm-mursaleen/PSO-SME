@@ -14,6 +14,9 @@ import type {
   ConnectQueueItem,
   CommunicationLog,
   StockItem,
+  Supplier,
+  SupplierInvoice,
+  StockMovement,
 } from '@/context/AppContext';
 
 // ── Param schema (a small JSON-Schema subset) ───────────────────────────────
@@ -109,6 +112,9 @@ export interface AlaraToolContext {
   connectQueue: ConnectQueueItem[];
   commLogs: CommunicationLog[];
   inventory: StockItem[];
+  suppliers: Supplier[];
+  supplierInvoices: SupplierInvoice[];
+  stockMovements: StockMovement[];
 
   // Mutating actions (deterministic — all math lives here, never in the model).
   addCustomer: (c: Omit<Customer, 'id' | 'lastVisitDays'>) => Customer;

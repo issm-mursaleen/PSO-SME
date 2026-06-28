@@ -49,6 +49,9 @@ export function useAlaraChat() {
       connectQueue: app.connectQueue,
       commLogs: app.commLogs,
       inventory: app.inventory,
+      suppliers: app.suppliers,
+      supplierInvoices: app.supplierInvoices,
+      stockMovements: app.stockMovements,
       addCustomer: app.addCustomer,
       updateCustomer: app.updateCustomer,
       recordSale: app.recordSale,
@@ -195,27 +198,26 @@ export function useAlaraChat() {
 
   /** Confirm a write/destructive card (sale, payment, invoice, update, bulk). */
   const confirmCard = useCallback((messageId: string) => {
-    setChatMessages((prev) => {
-      const msg = prev.find((m) => m.id === messageId);
-      if (!msg || !msg.toolCall || msg.status !== 'pending') return prev; // idempotent
-      const res = commitToolCall(msg.toolCall, ctxRef.current);
-      const newStatus: 'confirmed' | 'failed' = res.ok ? 'confirmed' : 'failed';
-      const updated = prev.map((m) =>
+    const msg = chatMessages.find((m) => m.id === messageId);
+    if (!msg || !msg.toolCall || msg.status !== 'pending') return; // idempotent
+    const res = commitToolCall(msg.toolCall, ctxRef.current);
+    const newStatus: 'confirmed' | 'failed' = res.ok ? 'confirmed' : 'failed';
+    setChatMessages((prev) =>
+      prev.map((m) =>
         m.id === messageId
           ? { ...m, status: newStatus, cardData: { ...(m.cardData ?? {}), status: newStatus } }
           : m,
-      );
-      const follow: AlaraChatMessage = {
-        id: uid(),
-        sender: 'alara',
-        text: res.text,
-        cardType: res.cardType,
-        cardData: res.cardData,
-      };
-      if (res.navigateTo) ctxRef.current.navigate(res.navigateTo);
-      return [...updated, follow];
+      ),
+    );
+    append({
+      id: uid(),
+      sender: 'alara',
+      text: res.text,
+      cardType: res.cardType,
+      cardData: res.cardData,
     });
-  }, []);
+    if (res.navigateTo) ctxRef.current.navigate(res.navigateTo);
+  }, [chatMessages, append]);
 
   /** Send a comms draft card: dispatch it into the Outreach workspace (logs to
    *  commLogs via the tool's commit), instead of opening an external WhatsApp tab. */
@@ -238,8 +240,9 @@ export function useAlaraChat() {
     const d = msg.cardData ?? {};
     const toolName = String(d.forTool ?? '');
     const baseArgs = (d.baseArgs ?? {}) as Record<string, unknown>;
+    const argKey = String(d.argKey ?? 'customer');
     markStatus(messageId, 'confirmed');
-    const call: ToolCall = { name: toolName, args: { ...baseArgs, customer: candidate.name } };
+    const call: ToolCall = { name: toolName, args: { ...baseArgs, [argKey]: candidate.name } };
     const outcome = runToolCall(call, ctxRef.current);
     append({
       id: uid(),
@@ -374,8 +377,30 @@ function localPlan(message: string): PlanResponse {
     const idle = dm ? Number(dm[1]) : 7;
     return fb([{ name: 'list_customers', args: { filter: 'inactive', idle_days: idle } }]);
   }
+  // Supplier directory / one supplier's profile.
+  if (/(supplier)/.test(low)) {
+    if (/(list|sab|all|directory|kitne)/.test(low))
+      return fb([{ name: 'list_suppliers', args: {} }]);
+    const s = nameBefore('se|ka|ki|supplier');
+    if (s) return fb([{ name: 'get_supplier', args: { supplier: s } }]);
+    return fb([{ name: 'list_suppliers', args: {} }]);
+  }
+  // Inventory listing: low/out-of-stock products.
+  if (/(low stock|out of stock|stock khatam|reorder)/.test(low) && /(product|item|inventory|list|kaunsi|konsi|sku)/.test(low)) {
+    const filter = /out of stock|khatam/.test(low) ? 'out_of_stock' : 'low_stock';
+    return fb([{ name: 'list_inventory', args: { filter } }]);
+  }
+  // One product's stock level: "<product> kitna stock hai / stock check".
+  if (/(kitna stock|stock check|stock hai|kitne (units|pieces)|stock kitna)/.test(low)) {
+    const p = nameBefore('ka|ki|mein|ke|kitna|stock');
+    if (p) return fb([{ name: 'get_product', args: { product: p } }]);
+  }
   // Dynamic visualization cards: charts/graphs with explanations + suggested actions.
-  if (/(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison)/.test(low)) {
+  if (/(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison|split|percentage|share|progress|target|goal)/.test(low)) {
+    if (/(progress|target|goal)/.test(low) && /(inventory|stock|sku|reorder|low)/.test(low))
+      return fb([{ name: 'show_visualization', args: { kind: 'reorder_progress' } }]);
+    if (/(split|percentage|share)/.test(low) && /(customer|grahak|client|type|segment)/.test(low))
+      return fb([{ name: 'show_visualization', args: { kind: 'customer_type_split' } }]);
     if (/(inventory|stock|sku|reorder|low)/.test(low))
       return fb([{ name: 'show_visualization', args: { kind: 'inventory_risk' } }]);
     if (/(product|item|sku|mix)/.test(low))
