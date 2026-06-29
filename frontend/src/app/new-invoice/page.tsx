@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useApp, Invoice, InvoiceItem } from '@/context/AppContext';
 import { Icon } from '@/components/ui/Icon';
+import { PRODUCT_CATALOG } from '@/lib/productCatalog';
 
 interface InvoiceRow {
   id: string;
@@ -12,24 +13,6 @@ interface InvoiceRow {
   unit: string;
   price: number;
 }
-
-// Preset catalog for autocomplete + price/unit autofill
-const PRODUCT_CATALOG = [
-  { name: 'Bread Large', price: 120, unit: 'pcs' },
-  { name: 'Milk 1 Litre', price: 260, unit: 'pcs' },
-  { name: 'Cooking Oil 1L', price: 155, unit: 'pcs' },
-  { name: 'Basmati Rice 10kg', price: 1800, unit: 'bag' },
-  { name: 'Basmati Rice 1kg', price: 250, unit: 'kg' },
-  { name: 'Dal Chana 1kg', price: 320, unit: 'kg' },
-  { name: 'Tapal Danedar 500g', price: 450, unit: 'box' },
-  { name: 'Nestle Milkpak', price: 280, unit: 'litre' },
-  { name: 'Olpers Cream', price: 160, unit: 'pcs' },
-  { name: 'Surf Excel 1kg', price: 650, unit: 'bag' },
-  { name: 'Coca Cola 1.5L', price: 150, unit: 'pcs' },
-  { name: 'Lays Chips Family Pack', price: 100, unit: 'pcs' },
-  { name: 'Sensodyne Toothpaste', price: 220, unit: 'pcs' },
-  { name: 'Cadbury Dairy Milk', price: 180, unit: 'pcs' },
-];
 
 const escapeHtml = (value: string) =>
   value

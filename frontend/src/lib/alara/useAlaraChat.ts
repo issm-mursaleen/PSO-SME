@@ -557,6 +557,21 @@ function localPlan(message: string): PlanResponse {
     const parts = rest.split(',').map((p) => p.trim()).filter(Boolean);
     if (parts.length) return fb([{ name: 'add_customer', args: { name: parts[0], area: parts[1] } }]);
   }
+  // Show/preview a PREVIOUSLY generated invoice (not a new one): an explicit
+  // ID, or "<customer> ka last/pichla bill dikhao" — checked BEFORE the
+  // invoice-creation block below, since both mention "bill"/"invoice".
+  const invoiceIdMatch = text.match(/\bINV-[\w-]+/i);
+  if (invoiceIdMatch && /(dikhao|kholo|show|preview|dekho)/.test(low)) {
+    return fb([{ name: 'get_invoice', args: { invoice_id: invoiceIdMatch[0].toUpperCase() } }]);
+  }
+  if (
+    /\b(bill|invoice)\b/.test(low) &&
+    /(last|pichla|pichli|purana|purani|previous|recent|dikhao|dekho|kholo|preview)/.test(low) &&
+    !text.includes('@')
+  ) {
+    const cust = nameBefore('ka|ki|ke');
+    if (cust) return fb([{ name: 'get_invoice', args: { customer: cust } }]);
+  }
   // Invoice: "Tariq Hotel ka bill — 50L doodh @ 200, 10kg cheeni @ 300".
   if (/\b(bill|invoice)\b/.test(low)) {
     const custM = text.match(/^\s*(.+?)\s+(?:ka|ki)\s+(?:bill|invoice)/i);

@@ -5,12 +5,15 @@
 // add a new card by writing one and registering it in CARDS below.
 
 import { useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import {
   Send, Copy, Check, ShoppingCart, UserPlus, AlertTriangle, ArrowRight, Package, Users,
   Lightbulb, AlertCircle, Sparkles, ChevronRight, BarChart3, TrendingUp, LineChart, PieChart, Target,
-  Download, FileSpreadsheet,
+  Download, FileSpreadsheet, Eye,
 } from 'lucide-react';
 import type { AlaraChatMessage, CardData } from '@/lib/alara/types';
+import type { BillableDoc } from '@/lib/invoiceDocument';
+import { downloadDocFile } from '@/lib/invoiceDocument';
 import { VisualizationCard as BetterVisualizationCard } from './VisualizationCard';
 import { TabbedVisualizationCard } from './TabbedVisualizationCard';
 
@@ -195,6 +198,24 @@ function InvoiceCard({ msg, actions }: CardProps) {
           <button onClick={() => actions.onConfirm(msg.id)} disabled={confirmed} className={confirmBtn}>
             {confirmed ? <Check className="size-3.5" /> : <Send className="size-3.5" />}
             {confirmed ? 'Created' : 'Confirm Bill'}
+          </button>
+        </div>
+      )}
+      {!pending && Boolean(d.invoice_id) && Boolean(d.document) && (
+        <div className={footer}>
+          <Link
+            href={`/invoices?preview=${encodeURIComponent(str(d.invoice_id))}`}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-outline-variant text-xs font-medium text-foreground hover:bg-muted transition-colors"
+          >
+            <Eye className="size-3.5" />
+            View in Invoices
+          </Link>
+          <button
+            onClick={() => downloadDocFile(d.document as BillableDoc)}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/85 active:scale-[0.98] transition-all"
+          >
+            <Download className="size-3.5" />
+            Download
           </button>
         </div>
       )}

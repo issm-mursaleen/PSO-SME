@@ -14,8 +14,10 @@
 // credit/udhar concept. Customers are ranked by lifetime sales and recency.
 
 import type { AlaraTool, AlaraToolContext, ToolResult } from './types';
-import type { Customer, StockItem, Supplier, SupplierInvoice } from '@/context/AppContext';
+import type { Customer, Invoice, StockItem, Supplier, SupplierInvoice } from '@/context/AppContext';
 import { MAX_BATCH } from './guardrails';
+import { fromCustomerInvoice } from '@/lib/invoiceDocument';
+import { findCatalogProduct } from '@/lib/productCatalog';
 
 const pkr = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
 
@@ -2330,10 +2332,53 @@ const updateCustomer: AlaraTool = {
   },
 };
 
+interface ResolvedInvoiceItem {
+  name: string;
+  qty: number;
+  rate: number;
+  total: number;
+  autoFilled?: boolean;
+}
+
+/** Shared by preview() and commit() so both price an item identically. A
+ *  missing/zero rate is filled from the known product catalog (the same one
+ *  Record Sale / New Invoice use for autocomplete) when the name matches;
+ *  otherwise — instead of silently billing PKR 0 — this asks the user for
+ *  that item's price rather than creating the invoice. */
+function resolveInvoiceItems(rawItems: Record<string, unknown>[]): { items?: ResolvedInvoiceItem[]; error?: ToolResult } {
+  if (rawItems.length === 0) return { error: err('Invoice mein kam az kam ek item hona chahiye.', 'no_items') };
+  const items: ResolvedInvoiceItem[] = [];
+  for (const it of rawItems) {
+    const name = String(it.name ?? 'Item').trim() || 'Item';
+    const qty = Number(it.qty ?? 1);
+    if (!Number.isFinite(qty) || qty <= 0) return { error: err(`"${name}" ki qty ghalat hai.`, 'invalid_item') };
+    if (it.rate != null && Number(it.rate) < 0) return { error: err(`"${name}" ka rate ghalat hai.`, 'invalid_item') };
+
+    let rate = Number(it.rate ?? 0);
+    let autoFilled = false;
+    if (!rate) {
+      const catalogMatch = findCatalogProduct(name);
+      if (catalogMatch) {
+        rate = catalogMatch.price;
+        autoFilled = true;
+      } else {
+        return {
+          error: err(`"${name}" ka price pata nahi — ek unit ka kitna rate hai? E.g. "${name} @ 150".`, 'missing_price'),
+        };
+      }
+    }
+    items.push({ name, qty, rate, total: Math.round(qty * rate * 100) / 100, autoFilled });
+  }
+  return { items };
+}
+
 const createInvoice: AlaraTool = {
   name: 'create_invoice',
   tier: 'write',
-  description: 'Generate an itemised invoice (a completed paid sale) for a customer.',
+  description:
+    'Generate an itemised invoice (a completed paid sale) for a customer. If an item has no ' +
+    'stated rate, a known product\'s usual price is used automatically; for an unknown product ' +
+    'with no rate, this asks the user for the price instead of billing PKR 0.',
   parameters: {
     type: 'object',
     properties: {
@@ -2345,9 +2390,9 @@ const createInvoice: AlaraTool = {
           properties: {
             name: { type: 'string' },
             qty: { type: 'number' },
-            rate: { type: 'number' },
+            rate: { type: 'number', description: 'Per-unit price. Omit if unknown — a known product\'s usual price fills in automatically.' },
           },
-          required: ['name', 'qty', 'rate'],
+          required: ['name', 'qty'],
         },
       },
     },
@@ -2358,17 +2403,19 @@ const createInvoice: AlaraTool = {
     if (candidates) return disambiguation('create_invoice', args, String(args.customer ?? ''), candidates);
     if (!customer) return err(`Customer "${args.customer}" nahi mila.`, 'customer_not_found');
     const rawItems = Array.isArray(args.items) ? (args.items as Record<string, unknown>[]) : [];
-    if (rawItems.length === 0) return err('Invoice mein kam az kam ek item hona chahiye.', 'no_items');
-    const items = rawItems.map((it) => {
-      const qty = Number(it.qty ?? 1);
-      const rate = Number(it.rate ?? 0);
-      return { name: String(it.name ?? 'Item'), qty, rate, total: Math.round(qty * rate * 100) / 100 };
-    });
-    for (const it of items) if (it.qty <= 0 || it.rate < 0) return err(`"${it.name}" ki qty/rate ghalat hai.`, 'invalid_item');
+    const resolved = resolveInvoiceItems(rawItems);
+    if (resolved.error) return resolved.error;
+    const items = resolved.items!;
     const total = items.reduce((s, it) => s + it.total, 0);
+    const autoFilledNames = items.filter((it) => it.autoFilled).map((it) => it.name);
     return {
       ok: true,
-      text: `${customer.name} ka bill ${pkr(total)} ready hai. Confirm karein.`,
+      text:
+        `${customer.name} ka bill ${pkr(total)} ready hai.` +
+        (autoFilledNames.length
+          ? ` (${autoFilledNames.join(', ')} ka price catalog se liya hai — check kar lein.)`
+          : '') +
+        ' Confirm karein.',
       cardType: 'invoice',
       cardData: {
         customer_id: customer.id,
@@ -2383,11 +2430,15 @@ const createInvoice: AlaraTool = {
     const { customer } = resolveCustomer(String(args.customer ?? ''), ctx.customers);
     if (!customer) return err('Customer nahi mila.', 'customer_not_found');
     const rawItems = Array.isArray(args.items) ? (args.items as Record<string, unknown>[]) : [];
-    const invItems = rawItems.map((it) => {
-      const quantity = Number(it.qty ?? 1);
-      const price = Number(it.rate ?? 0);
-      return { name: String(it.name ?? 'Item'), quantity, unit: 'item', price, total: Math.round(quantity * price * 100) / 100 };
-    });
+    const resolved = resolveInvoiceItems(rawItems);
+    if (resolved.error) return resolved.error;
+    const invItems = resolved.items!.map((it) => ({
+      name: it.name,
+      quantity: it.qty,
+      unit: 'item',
+      price: it.rate,
+      total: it.total,
+    }));
     const invoice = ctx.recordSale(customer.id, invItems, 0, 'Invoice via Alara chat');
     return {
       ok: true,
@@ -2399,7 +2450,67 @@ const createInvoice: AlaraTool = {
         customer_name: customer.name,
         items: invItems.map((it) => ({ name: it.name, qty: it.quantity, total: it.total })),
         total: invoice.amount,
+        // Full printable shape — lets the chat card offer Download/View-in-
+        // Invoices without re-fetching anything.
+        document: fromCustomerInvoice(invoice),
       },
+    };
+  },
+};
+
+const getInvoice: AlaraTool = {
+  name: 'get_invoice',
+  tier: 'read',
+  description:
+    'Show a PREVIOUSLY generated invoice in chat with a full preview, a Download action, and a ' +
+    'button to open it on the Invoices tab. Look up by exact invoice ID (e.g. "INV-4821"), or by ' +
+    'customer name to get their most recent invoice ("Tariq ka last bill dikhao"). Use create_invoice ' +
+    'instead when the user wants a NEW invoice generated.',
+  parameters: {
+    type: 'object',
+    properties: {
+      invoice_id: { type: 'string', description: 'Exact invoice ID, e.g. "INV-4821".' },
+      customer: { type: 'string', description: 'Customer name — returns their most recent invoice when invoice_id is not given.' },
+    },
+  },
+  preview: (args, ctx) => {
+    const invoiceId = String(args.invoice_id ?? '').trim();
+    let invoice: Invoice | undefined = invoiceId
+      ? ctx.invoices.find((i) => i.id.toLowerCase() === invoiceId.toLowerCase())
+      : undefined;
+
+    if (!invoice && args.customer) {
+      const { customer, candidates } = resolveCustomer(String(args.customer), ctx.customers);
+      if (candidates) return disambiguation('get_invoice', args, String(args.customer), candidates);
+      if (!customer) return err(`Customer "${args.customer}" nahi mila.`, 'customer_not_found');
+      const matches = ctx.invoices
+        .filter((i) => i.customerId === customer.id)
+        .slice()
+        .sort((a, b) => b.date.localeCompare(a.date));
+      invoice = matches[0];
+      if (!invoice) return err(`${customer.name} ka koi invoice nahi mila.`, 'invoice_not_found');
+    }
+
+    if (!invoice) {
+      return err(
+        invoiceId ? `Invoice "${invoiceId}" nahi mila.` : 'Invoice ID ya customer ka naam dein.',
+        'invoice_not_found',
+      );
+    }
+
+    return {
+      ok: true,
+      text: `Invoice ${invoice.id} — ${pkr(invoice.amount)}.`,
+      cardType: 'invoice',
+      cardData: {
+        invoice_id: invoice.id,
+        customer_id: invoice.customerId,
+        customer_name: invoice.customerName,
+        items: invoice.items.map((it) => ({ name: it.name, qty: it.quantity, total: it.total })),
+        total: invoice.amount,
+        document: fromCustomerInvoice(invoice),
+      },
+      data: { invoice_id: invoice.id },
     };
   },
 };
@@ -2563,6 +2674,7 @@ export const TOOLS: AlaraTool[] = [
   getCustomer,
   customerVisit,
   customerInsight,
+  getInvoice,
   listCustomers,
   getProduct,
   listInventory,
