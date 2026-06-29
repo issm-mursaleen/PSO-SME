@@ -24,10 +24,30 @@ export interface ChatCustomerCtx {
   lastVisitDays: number;
 }
 
+export interface ChatSupplierCtx {
+  id: string;
+  name: string;
+  category?: string;
+  status?: string;
+}
+
+export interface ChatSupplierInvoiceCtx {
+  id: string;
+  supplierId?: string;
+  supplierName?: string;
+  date: string;
+  amount: number;
+  status?: string;
+}
+
 export interface ChatContext {
   active_customer_id?: string | null;
   current_page?: string;
   customers?: ChatCustomerCtx[];
+  suppliers?: ChatSupplierCtx[];
+  /** Supplier purchase invoices — used by the backend to build accurate
+   *  supplier_purchase_trend visualizations. */
+  supplier_invoices?: ChatSupplierInvoiceCtx[];
 }
 
 /** One prior turn of the conversation, sent so the agent remembers earlier chats. */

@@ -47,6 +47,19 @@ class QueryIn(BaseModel):
     days: int = 7
 
 
+class VisualizationIn(BaseModel):
+    kind: str = "sales_trend"
+    chartType: str | None = None
+    period_value: int | None = None
+    period_unit: Literal["days", "weeks", "months", "years"] | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    group_by: Literal["day", "week", "month", "year", "auto"] = "auto"
+    # Named period presets: "this_week", "last_week", "this_month", "last_month",
+    # "this_year", "year_to_date". Takes precedence over period_value/period_unit.
+    preset: str | None = None
+
+
 # ── Chat ────────────────────────────────────────────────────────────────────
 class CustomerCtx(BaseModel):
     """A customer row sent by the frontend so the backend resolves names against
@@ -61,10 +74,33 @@ class CustomerCtx(BaseModel):
     lastVisitDays: int = 0
 
 
+class SupplierCtx(BaseModel):
+    """A supplier row sent by the frontend so the planner can resolve supplier
+    names against the live AppContext roster. The backend still never computes
+    supplier totals; frontend tools do that from AppContext."""
+    id: str
+    name: str
+    category: str = ""
+    status: str = "Active"
+
+
+class SupplierInvoiceCtx(BaseModel):
+    """A supplier invoice row sent by the frontend so the backend can build
+    accurate supplier purchase trend visualizations."""
+    id: str
+    supplierId: str = ""
+    supplierName: str = ""
+    date: str = ""
+    amount: float = 0.0
+    status: str = "Paid"
+
+
 class ChatContext(BaseModel):
     active_customer_id: Optional[str] = None
     current_page: Optional[str] = None
     customers: list[CustomerCtx] = []
+    suppliers: list[SupplierCtx] = []
+    supplier_invoices: list[SupplierInvoiceCtx] = []
 
 
 class ChatHistoryMessage(BaseModel):
@@ -89,7 +125,7 @@ class ChatAction(BaseModel):
 class ChatOut(BaseModel):
     text: str
     card_type: Optional[
-        Literal["metric", "confirmation", "invoice", "sale_confirmation", "customer_confirmation"]
+        Literal["metric", "confirmation", "invoice", "sale_confirmation", "customer_confirmation", "visualization"]
     ] = None
     card_data: Optional[dict[str, Any]] = None
     action: Optional[ChatAction] = None

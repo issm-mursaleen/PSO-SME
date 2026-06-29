@@ -17,6 +17,7 @@ import { toToolSchemas } from './types';
 import { runToolCall, commitToolCall } from './toolRunner';
 
 const CHAT_CACHE_KEY = 'alara-chat-cache-v1';
+const CHAT_CACHE_BACKUP_KEY = 'alara-chat-cache-v1-backup';
 const uid = () => `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const WELCOME: AlaraChatMessage = {
@@ -55,6 +56,8 @@ export function useAlaraChat() {
       addCustomer: app.addCustomer,
       updateCustomer: app.updateCustomer,
       recordSale: app.recordSale,
+      recordPurchase: app.recordPurchase,
+      confirmDraftPurchase: app.confirmDraftPurchase,
       sendWhatsAppReminder: app.sendWhatsAppReminder,
       recordStockIn: app.recordStockIn,
       navigate: (route: string) => router.push(route),
@@ -66,23 +69,30 @@ export function useAlaraChat() {
   // store (not derivable during SSR), so setState in these effects is intended.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    const hydrate = (raw: string | null) => {
+      if (!raw) return false;
+      const cached = JSON.parse(raw) as { threads?: ChatThread[]; activeChatId?: string };
+      if (!Array.isArray(cached.threads) || cached.threads.length === 0) return false;
+      const activeId =
+        cached.activeChatId && cached.threads.some((t) => t.id === cached.activeChatId)
+          ? cached.activeChatId
+          : cached.threads[0].id;
+      const active = cached.threads.find((t) => t.id === activeId) ?? cached.threads[0];
+      setChatThreads(cached.threads);
+      setActiveChatId(activeId);
+      setChatMessages(active.messages);
+      return true;
+    };
+
     try {
       const raw = window.localStorage.getItem(CHAT_CACHE_KEY);
-      if (raw) {
-        const cached = JSON.parse(raw) as { threads?: ChatThread[]; activeChatId?: string };
-        if (Array.isArray(cached.threads) && cached.threads.length) {
-          const activeId =
-            cached.activeChatId && cached.threads.some((t) => t.id === cached.activeChatId)
-              ? cached.activeChatId
-              : cached.threads[0].id;
-          const active = cached.threads.find((t) => t.id === activeId) ?? cached.threads[0];
-          setChatThreads(cached.threads);
-          setActiveChatId(activeId);
-          setChatMessages(active.messages);
-        }
-      }
+      if (!hydrate(raw)) hydrate(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY));
     } catch {
-      /* ignore corrupt cache */
+      try {
+        hydrate(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY));
+      } catch {
+        /* ignore corrupt cache */
+      }
     }
     setCacheReady(true);
   }, []);
@@ -107,7 +117,12 @@ export function useAlaraChat() {
 
   useEffect(() => {
     if (!cacheReady) return;
-    window.localStorage.setItem(CHAT_CACHE_KEY, JSON.stringify({ threads: chatThreads, activeChatId }));
+    const nextCache = JSON.stringify({ threads: chatThreads, activeChatId });
+    const previousCache = window.localStorage.getItem(CHAT_CACHE_KEY);
+    if (previousCache && previousCache !== nextCache) {
+      window.localStorage.setItem(CHAT_CACHE_BACKUP_KEY, previousCache);
+    }
+    window.localStorage.setItem(CHAT_CACHE_KEY, nextCache);
   }, [chatThreads, activeChatId, cacheReady]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -165,6 +180,22 @@ export function useAlaraChat() {
           status: c.status,
           lastVisitDays: c.lastVisitDays,
         })),
+        suppliers: app.suppliers.map((s) => ({
+          id: s.id,
+          name: s.name,
+          category: s.category,
+          status: s.status,
+        })),
+        // Send supplier invoices so the backend can build accurate supplier
+        // purchase trend visualizations from real AppContext data.
+        supplier_invoices: app.supplierInvoices.map((inv) => ({
+          id: inv.id,
+          supplierId: inv.supplierId,
+          supplierName: inv.supplierName,
+          date: inv.date,
+          amount: inv.amount,
+          status: inv.status,
+        })),
       };
 
       try {
@@ -185,7 +216,7 @@ export function useAlaraChat() {
         setIsTyping(false);
       }
     },
-    [app.customers, append, applyPlan, chatMessages],
+    [app.customers, app.suppliers, append, applyPlan, chatMessages],
   );
 
   // ── Card actions ─────────────────────────────────────────────────────────────
@@ -325,6 +356,28 @@ function localPlan(message: string): PlanResponse {
   const amt = (low.match(/\d[\d,]*/)?.[0] ?? '').replace(/,/g, '');
   const nameBefore = (stop: string) =>
     text.match(new RegExp(`^\\s*([A-Za-z][A-Za-z\\s]+?)\\s+(?:${stop})\\b`, 'i'))?.[1]?.trim();
+  const parsePeriod = (): Record<string, unknown> => {
+    const match = low.match(/(?:pichle|last|past)?\s*(\d+)\s*(din|dino|days?|hafte|hafton|weeks?|maheene|mahine|months?|saal|years?)/);
+    if (!match) return {};
+    const value = Number(match[1]);
+    const rawUnit = match[2].toLowerCase();
+    const unit = /din|day/.test(rawUnit)
+      ? 'days'
+      : /hafte|hafton|week/.test(rawUnit)
+        ? 'weeks'
+        : /maheene|mahine|month/.test(rawUnit)
+          ? 'months'
+          : 'years';
+    const group_by =
+      unit === 'days'
+        ? 'day'
+        : unit === 'weeks'
+          ? value <= 4 ? 'day' : 'week'
+          : unit === 'months'
+            ? value <= 2 ? 'week' : 'month'
+            : 'month';
+    return { period_value: value, period_unit: unit, group_by };
+  };
 
   const fb = (tool_calls: { name: string; args: Record<string, unknown> }[], final_text?: string): PlanResponse => ({
     tool_calls,
@@ -377,11 +430,41 @@ function localPlan(message: string): PlanResponse {
     const idle = dm ? Number(dm[1]) : 7;
     return fb([{ name: 'list_customers', args: { filter: 'inactive', idle_days: idle } }]);
   }
+  const periodArgs = parsePeriod();
+  // Supplier operations can be phrased without the literal word "supplier".
+  if (/(purchase|purchases|payable|outstanding|overdue|due|payment|inventory receive|receive hui)/.test(low)) {
+    const s = nameBefore('ki|ka|ke|se');
+    if (Object.keys(periodArgs).length > 0 && /(purchase|purchases)/.test(low))
+      return fb([{ name: 'show_visualization', args: { kind: 'supplier_purchase_trend', chartType: /(compare|comparison)/.test(low) ? 'bar' : 'area', ...periodArgs } }]);
+    if (/(csv|export|download)/.test(low))
+      return fb([{ name: 'export_supplier_csv', args: { dataset: 'supplier_invoices', ...(s ? { supplier: s } : {}) } }]);
+    if (/(payable|outstanding|overdue|due|payment|pending)/.test(low)) {
+      const status = /overdue/.test(low) ? 'overdue' : /due/.test(low) ? 'due_soon' : /paid/.test(low) ? 'paid' : /pending|outstanding/.test(low) ? 'pending' : 'all';
+      return fb([{ name: 'supplier_payables', args: { status, ...(s ? { supplier: s } : {}) } }]);
+    }
+    if (/(invoice|bill|draft|generate|banao|banado|receive hui)/.test(low))
+      return fb([{ name: 'draft_supplier_invoice', args: { ...(s ? { supplier: s } : {}) } }]);
+    return fb([{ name: 'supplier_purchase_analysis', args: { ...(s ? { supplier: s } : {}) } }]);
+  }
   // Supplier directory / one supplier's profile.
   if (/(supplier)/.test(low)) {
+    const s = nameBefore('se|ka|ki|supplier|ke');
+    if (/(csv|export|download)/.test(low)) {
+      const dataset = /(item|line)/.test(low) ? 'supplier_purchase_items' : /(directory|list|contact)/.test(low) ? 'suppliers' : 'supplier_invoices';
+      return fb([{ name: 'export_supplier_csv', args: { dataset, ...(s ? { supplier: s } : {}) } }]);
+    }
+    if (/(payable|outstanding|overdue|due|pending|payment)/.test(low)) {
+      const status = /overdue/.test(low) ? 'overdue' : /due/.test(low) ? 'due_soon' : /paid/.test(low) ? 'paid' : /pending|outstanding/.test(low) ? 'pending' : 'all';
+      return fb([{ name: 'supplier_payables', args: { status, ...(s ? { supplier: s } : {}) } }]);
+    }
+    if (/(purchase|purchases|analysis|trend|rank|compare|contribution|history)/.test(low)) {
+      return fb([{ name: 'supplier_purchase_analysis', args: { ...(s ? { supplier: s } : {}) } }]);
+    }
+    if (/(invoice|bill|draft|generate|banao|banado)/.test(low)) {
+      return fb([{ name: 'draft_supplier_invoice', args: { ...(s ? { supplier: s } : {}) } }]);
+    }
     if (/(list|sab|all|directory|kitne)/.test(low))
       return fb([{ name: 'list_suppliers', args: {} }]);
-    const s = nameBefore('se|ka|ki|supplier');
     if (s) return fb([{ name: 'get_supplier', args: { supplier: s } }]);
     return fb([{ name: 'list_suppliers', args: {} }]);
   }
@@ -395,19 +478,56 @@ function localPlan(message: string): PlanResponse {
     const p = nameBefore('ka|ki|mein|ke|kitna|stock');
     if (p) return fb([{ name: 'get_product', args: { product: p } }]);
   }
+  // Top-N customers intent ("top 3 customers", "top3 grahak", "best 5 customers")
+  // is checked BEFORE the generic sales-trend block below, so a time-bounded
+  // request like "pichle 3 weeks mei top 3 customers ka data dikhao" doesn't
+  // get swallowed by the generic sales_trend fallback.
+  const topLimitMatch = low.match(/(?:top|best)\s*(\d+)/);
+  // Require an explicit "top N" / plural "customers" wording — not a bare
+  // "best customer kaun hai", which stays routed to query_data's insight card.
+  const isTopCustomerIntent =
+    /(customer|grahak|client)/.test(low) &&
+    (Boolean(topLimitMatch) || /(top|best)\s*\d*\s*(customers|grahako|clients)/.test(low));
+  if (isTopCustomerIntent) {
+    return fb([
+      {
+        name: 'show_visualization',
+        args: {
+          kind: 'top_customers',
+          chartType: 'bar',
+          ...(topLimitMatch ? { limit: Number(topLimitMatch[1]) } : {}),
+          ...periodArgs,
+        },
+      },
+    ]);
+  }
+  const hasTimePeriod = Object.keys(periodArgs).length > 0;
+  const hasAnalyticsSubject = /(sale|sales|revenue|purchase|purchases|customer|inventory|stock)/.test(low);
+  if (hasTimePeriod && hasAnalyticsSubject) {
+    return fb([
+      {
+        name: 'show_visualization',
+        args: {
+          kind: /(purchase|purchases)/.test(low) ? 'supplier_purchase_trend' : 'sales_trend',
+          chartType: /(compare|comparison)/.test(low) ? 'bar' : 'area',
+          ...periodArgs,
+        },
+      },
+    ]);
+  }
   // Dynamic visualization cards: charts/graphs with explanations + suggested actions.
   if (/(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison|split|percentage|share|progress|target|goal)/.test(low)) {
     if (/(progress|target|goal)/.test(low) && /(inventory|stock|sku|reorder|low)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'reorder_progress' } }]);
+      return fb([{ name: 'show_visualization', args: { kind: 'reorder_progress', ...periodArgs } }]);
     if (/(split|percentage|share)/.test(low) && /(customer|grahak|client|type|segment)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'customer_type_split' } }]);
+      return fb([{ name: 'show_visualization', args: { kind: 'customer_type_split', ...periodArgs } }]);
     if (/(inventory|stock|sku|reorder|low)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'inventory_risk' } }]);
+      return fb([{ name: 'show_visualization', args: { kind: 'inventory_risk', ...periodArgs } }]);
     if (/(product|item|sku|mix)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'product_mix' } }]);
+      return fb([{ name: 'show_visualization', args: { kind: 'product_mix', ...periodArgs } }]);
     if (/(customer|grahak|client|top|best)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'top_customers' } }]);
-    return fb([{ name: 'show_visualization', args: { kind: 'sales_trend' } }]);
+      return fb([{ name: 'show_visualization', args: { kind: 'top_customers', ...periodArgs } }]);
+    return fb([{ name: 'show_visualization', args: { kind: /(purchase|purchases)/.test(low) ? 'supplier_purchase_trend' : 'sales_trend', chartType: 'area', ...periodArgs } }]);
   }
   // Proactive next-steps: "ab kya karun", "next step", "what next", "suggestion".
   if (/(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)/.test(low)) {

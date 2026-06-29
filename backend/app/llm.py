@@ -27,6 +27,7 @@ from .schemas import (
     QueryIn,
     RecordSaleIn,
     ToolCallOut,
+    VisualizationIn,
     WorkflowResult,
 )
 
@@ -74,10 +75,29 @@ PLAN_SYSTEM_PROMPT = (
     "lifetime purchases, products supplied and outstanding drafts use `get_supplier`; for the "
     "supplier directory use `list_suppliers`. These are real, live data — never invent stock "
     "levels or supplier figures.\n\n"
-    "VISUALIZATIONS — call `show_visualization` with an explicit `chartType` using this rule: "
-    "ONE number → kpi. Comparison between items → bar. Change over time → line. Percentage split "
-    "of a whole → donut. Progress toward a target → progress. Only set `chartType` when the user's "
-    "wording implies a specific style; otherwise omit it and let the `kind` pick its natural default.\n\n"
+    "SUPPLIER OPERATIONS — for supplier discovery/contact/status use `list_suppliers` or "
+    "`get_supplier`. For purchase totals, rankings, supplier-wise contribution, item/date/status "
+    "filters, trends or unusual changes use `supplier_purchase_analysis`. For paid, pending, "
+    "due-soon, overdue and outstanding balances use `supplier_payables`. For supplier invoice "
+    "drafts use `draft_supplier_invoice`: it must show a full preview first and the app will only "
+    "create/post after explicit user confirmation. For CSV requests use `export_supplier_csv`; "
+    "show record count, selected columns, active filters and a 5-row preview before export. "
+    "Do not invent suppliers, invoices, purchases or totals. Do not expose internal parameter names "
+    "like dataset, sort or filter keys to the user; phrase them as plain business wording. "
+    "Keep next actions to at most three.\n\n"
+    "VISUALIZATIONS — call `show_visualization` for graphs and charts. Always extract the "
+    "requested time range. Examples: '6 maheene' or 'last 6 months' means period_value=6 "
+    "and period_unit='months'; '3 hafte' means period_value=3 and period_unit='weeks'; "
+    "'10 din' means period_value=10 and period_unit='days'. For named periods use the "
+    "preset field: 'is mahine/this month' → preset='this_month'; "
+    "'pichle mahine/last month' → preset='last_month'; "
+    "'is hafte/this week' → preset='this_week'; 'pichle hafte/last week' → preset='last_week'; "
+    "'is saal/this year/year to date/ytd' → preset='this_year'. "
+    "For explicit dates, provide date_from and date_to in YYYY-MM-DD format. "
+    "Do not calculate date boundaries yourself. "
+    "ALWAYS use group_by='auto' unless the user EXPLICITLY says daily/weekly/monthly/yearly. "
+    "ONE number → kpi. Comparison → bar. Change over time → area or line. "
+    "Percentage split → donut. Target progress → progress.\n\n"
     "PROGRESSIVE DISCLOSURE: simple question = short direct answer; analytical question = "
     "answer + supporting metrics; full-profile request = detailed customer card. When you add "
     "a short reply for an analytical question, follow this order: (1) seedha jawab, (2) key "
@@ -107,6 +127,12 @@ def _plan_with_llm(payload: PlanIn) -> PlanOut:
     if payload.context and payload.context.customers:
         names = ", ".join(c.name for c in payload.context.customers[:60])
         system += f"\nKnown customers: {names}."
+    if payload.context and payload.context.suppliers:
+        names = ", ".join(s.name for s in payload.context.suppliers[:60])
+        system += (
+            f"\nKnown suppliers from the live app data: {names}. "
+            "Use these names only for routing/resolution; never calculate supplier totals in the LLM."
+        )
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for turn in payload.history[-12:]:
@@ -145,10 +171,60 @@ def _plan_with_llm(payload: PlanIn) -> PlanOut:
 
 
 # ── Offline fallback planner (no API key) — mirrors the frontend localPlan ────
+def _parse_named_period(low: str) -> dict[str, Any]:
+    """Recognise Urdu + English named period phrases and map them to a preset."""
+    if re.search(r"(is|iss|this)\s+(haftay|hafte|week)", low):
+        return {"preset": "this_week", "group_by": "auto"}
+    if re.search(r"(pichla|pichle|last)\s+(hafta|hafte|week)", low):
+        return {"preset": "last_week", "group_by": "auto"}
+    if re.search(r"(is|iss|this)\s+(mahine|maheene|month)", low):
+        return {"preset": "this_month", "group_by": "auto"}
+    if re.search(r"(pichla|pichle|last)\s+(mahina|maheena|mahine|month)", low):
+        return {"preset": "last_month", "group_by": "auto"}
+    if re.search(r"(is|iss|this)\s+(saal|year)", low):
+        return {"preset": "this_year", "group_by": "auto"}
+    if re.search(r"(year\s*to\s*date|ytd)", low):
+        return {"preset": "year_to_date", "group_by": "auto"}
+    if re.search(r"(last|pichle)\s+(quarter|3\s*months?|3\s*maheene)", low):
+        return {"period_value": 3, "period_unit": "months", "group_by": "auto"}
+    return {}
+
+
+def _parse_period(low: str) -> dict[str, Any]:
+    # Named period presets take priority over numeric parsing.
+    named = _parse_named_period(low)
+    if named:
+        return named
+
+    match = re.search(
+        r"(?:pichle|last|past)?\s*(\d+)\s*"
+        r"(din|dino|days?|hafte|hafton|weeks?|maheene|mahine|months?|saal|years?)",
+        low,
+    )
+    if not match:
+        return {}
+
+    value = int(match.group(1))
+    raw_unit = match.group(2).lower()
+    if re.search(r"din|day", raw_unit):
+        unit = "days"
+    elif re.search(r"hafte|hafton|week", raw_unit):
+        unit = "weeks"
+    elif re.search(r"maheene|mahine|month", raw_unit):
+        unit = "months"
+    else:
+        unit = "years"
+
+    # Always send group_by='auto' — the backend resolves_group_by() is the
+    # single source of truth for granularity selection.
+    return {"period_value": value, "period_unit": unit, "group_by": "auto"}
+
+
 def _plan_fallback(message: str) -> PlanOut:
     text = message.strip()
     low = text.lower()
     amt = _parse_amount(low)
+    period_args = _parse_period(low)
 
     def call(name: str, args: dict[str, Any]) -> PlanOut:
         return PlanOut(tool_calls=[ToolCallOut(name=name, args=args)], source="fallback")
@@ -206,6 +282,51 @@ def _plan_fallback(message: str) -> PlanOut:
         idle = int(dm.group(1)) if dm else 7
         return call("list_customers", {"filter": "inactive", "idle_days": idle})
 
+    # Supplier operations, including phrases that do not literally say "supplier".
+    if re.search(r"(supplier|purchase|purchases|payable|outstanding|overdue|payment|receive hui)", low):
+        supplier = _name_before(text, r"ki|ka|ke|se|supplier")
+        supplier_arg = {"supplier": supplier} if supplier else {}
+        if period_args and re.search(r"(purchase|purchases)", low):
+            return call(
+                "show_visualization",
+                {
+                    "kind": "supplier_purchase_trend",
+                    "chartType": "bar" if re.search(r"(compare|comparison)", low) else "area",
+                    **period_args,
+                },
+            )
+        if re.search(r"(csv|export|download)", low):
+            dataset = "supplier_purchase_items" if re.search(r"(item|line)", low) else \
+                "suppliers" if re.search(r"(directory|list|contact)", low) else "supplier_invoices"
+            return call("export_supplier_csv", {"dataset": dataset, **supplier_arg})
+        if re.search(r"(payable|outstanding|overdue|due|payment|pending)", low):
+            status = "overdue" if "overdue" in low else \
+                "due_soon" if "due" in low else \
+                "paid" if "paid" in low else \
+                "pending" if re.search(r"(pending|outstanding)", low) else "all"
+            return call("supplier_payables", {"status": status, **supplier_arg})
+        if re.search(r"(invoice|bill|draft|generate|banao|banado|receive hui)", low):
+            return call("draft_supplier_invoice", supplier_arg)
+        if re.search(r"(analysis|trend|rank|compare|contribution|history|purchase|purchases)", low):
+            return call("supplier_purchase_analysis", supplier_arg)
+        if re.search(r"(list|sab|all|directory|kitne)", low):
+            return call("list_suppliers", {})
+        if supplier:
+            return call("get_supplier", {"supplier": supplier})
+        return call("list_suppliers", {})
+
+    has_time_period = bool(period_args)
+    has_analytics_subject = bool(re.search(r"(sale|sales|revenue|purchase|purchases|customer|inventory|stock)", low))
+    if has_time_period and has_analytics_subject:
+        return call(
+            "show_visualization",
+            {
+                "kind": "supplier_purchase_trend" if re.search(r"(purchase|purchases)", low) else "sales_trend",
+                "chartType": "bar" if re.search(r"(compare|comparison)", low) else "area",
+                **period_args,
+            },
+        )
+
     # Dynamic visualization cards: charts/graphs with explanations + suggested actions.
     # Keep this in backend fallback because /api/plan can return fallback successfully,
     # which means the frontend's local fallback is not used.
@@ -214,16 +335,23 @@ def _plan_fallback(message: str) -> PlanOut:
         low,
     ):
         if re.search(r"(progress|target|goal)", low) and re.search(r"(inventory|stock|sku|reorder|low)", low):
-            return call("show_visualization", {"kind": "reorder_progress"})
+            return call("show_visualization", {"kind": "reorder_progress", **period_args})
         if re.search(r"(split|percentage|share)", low) and re.search(r"(customer|grahak|client|type|segment)", low):
-            return call("show_visualization", {"kind": "customer_type_split"})
+            return call("show_visualization", {"kind": "customer_type_split", **period_args})
         if re.search(r"(inventory|stock|sku|reorder|low)", low):
-            return call("show_visualization", {"kind": "inventory_risk"})
+            return call("show_visualization", {"kind": "inventory_risk", **period_args})
         if re.search(r"(product|item|sku|mix)", low):
-            return call("show_visualization", {"kind": "product_mix"})
+            return call("show_visualization", {"kind": "product_mix", **period_args})
         if re.search(r"(customer|grahak|client|top|best)", low):
-            return call("show_visualization", {"kind": "top_customers"})
-        return call("show_visualization", {"kind": "sales_trend"})
+            return call("show_visualization", {"kind": "top_customers", **period_args})
+        return call(
+            "show_visualization",
+            {
+                "kind": "supplier_purchase_trend" if re.search(r"(purchase|purchases)", low) else "sales_trend",
+                "chartType": "area",
+                **period_args,
+            },
+        )
 
     if re.search(r"(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)", low):
         cust = _name_before(text, r"ke|ka|ki|ko|for")
@@ -289,6 +417,32 @@ TOOLS: list[dict[str, Any]] = [
             "template": {"type": "string", "enum": ["sales_today", "top_by_sales"]},
             "days": {"type": "integer"},
         }, "required": ["template"]}}},
+    {"type": "function", "function": {
+        "name": "show_visualization",
+        "description": (
+            "Show a sales or supplier-purchase visualization for a requested "
+            "relative or explicit date range. Use kind='sales_trend' for customer "
+            "sales, 'supplier_purchase_trend' for supplier purchases, "
+            "'top_customers' for a customer ranking, 'product_mix' for item breakdown, "
+            "'customer_type_split' for a segment pie, 'inventory_risk' for low-stock "
+            "SKUs, 'reorder_progress' for reorder level progress."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": [
+                "sales_trend", "supplier_purchase_trend", "top_customers",
+                "product_mix", "customer_type_split", "inventory_risk", "reorder_progress",
+            ]},
+            "chartType": {"type": "string", "enum": ["area", "line", "bar", "donut", "progress"]},
+            "preset": {"type": "string", "enum": [
+                "this_week", "last_week", "this_month", "last_month",
+                "this_year", "year_to_date",
+            ]},
+            "period_value": {"type": "integer", "minimum": 1},
+            "period_unit": {"type": "string", "enum": ["days", "weeks", "months", "years"]},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "group_by": {"type": "string", "enum": ["day", "week", "month", "year", "auto"]},
+        }, "required": ["kind"]}}},
 ]
 
 
@@ -346,6 +500,9 @@ def _run(name: str, args: dict[str, Any], source: str) -> ChatOut:
     if name == "query_data":
         res = workflows.query_data(QueryIn(**args))
         return _to_chat(res, "metric", source)
+    if name == "show_visualization":
+        res = workflows.show_visualization(VisualizationIn(**args))
+        return _to_chat(res, "visualization", source)
     return ChatOut(text="Maaf kijiye, samajh nahi aaya.", source=source)
 
 
@@ -431,6 +588,7 @@ def _parse_amount(s: str) -> float | None:
 def _handle_fallback(message: str) -> ChatOut:
     text = message.strip()
     low = text.lower()
+    period_args = _parse_period(low)
 
     # W1 — sale: "... ne 1200 ka saman liya"
     if re.search(r"\b(liya|le liya|saman|kharid|bika|sale|becha)\b", low):
@@ -456,10 +614,22 @@ def _handle_fallback(message: str) -> ChatOut:
     if "sab se zyada" in low or "most business" in low or "best customer" in low:
         return _run("query_data", {"template": "top_by_sales"}, "fallback")
 
+    # Visualization (mirrors _plan_fallback logic for the legacy /chat route).
+    has_analytics = bool(re.search(r"(sale|sales|revenue|purchase|purchases|customer|inventory|stock|graph|chart|visual|trend)", low))
+    if (period_args or re.search(r"(visual|chart|graph|trend|split|percentage)", low)) and has_analytics:
+        kind = "supplier_purchase_trend" if re.search(r"(purchase|purchases)", low) else "sales_trend"
+        if re.search(r"(split|percentage|share).*(customer|type|segment)", low):
+            kind = "customer_type_split"
+        elif re.search(r"(inventory|stock|reorder|low)", low):
+            kind = "inventory_risk"
+        elif re.search(r"(top|best).*(customer)", low):
+            kind = "top_customers"
+        return _run("show_visualization", {"kind": kind, **period_args}, "fallback")
+
     return ChatOut(
-        text=("Ji, main sale likh sakta hun, customer add kar sakta hun, "
-              "invoice bana sakta hun, ya sales/customer ke sawal ka jawab de sakta hun. "
-              "Kya karna hai?"),
+        text=("Ji, main sale likh sakti hun, customer add kar sakti hun, "
+              "invoice bana sakti hun, graph/chart dikhao sakti hun, ya sales/customer "
+              "ke sawal ka jawab de sakti hun. Kya karna hai?"),
         source="fallback",
     )
 

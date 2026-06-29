@@ -24,6 +24,7 @@ export interface ParamSpec {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
   description?: string;
   enum?: (string | number)[];
+  minimum?: number;
   items?: ParamSpec;
   properties?: Record<string, ParamSpec>;
   required?: string[];
@@ -50,6 +51,7 @@ export type CardType =
   | 'disambiguation'
   | 'next_steps' // data-derived suggested actions (each sends a follow-up prompt)
   | 'insight' // 360° analytical answer: figures + context + risks + actions
+  | 'csv_export'
   | 'visualization'
   | 'navigate';
 
@@ -125,6 +127,14 @@ export interface AlaraToolContext {
     discount: number,
     notes: string,
   ) => Invoice;
+  recordPurchase: (
+    supplierId: string,
+    items: { name: string; quantity: number; unit: string; price: number; total: number; sku?: string }[],
+    discount: number,
+    notes: string,
+    opts?: { status?: 'Draft' | 'Paid'; invoiceNumber?: string; date?: string },
+  ) => SupplierInvoice;
+  confirmDraftPurchase: (invoiceId: string) => SupplierInvoice | null;
   sendWhatsAppReminder: (
     customerId: string,
     message: string,

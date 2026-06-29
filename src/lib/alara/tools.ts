@@ -14,7 +14,7 @@
 // credit/udhar concept. Customers are ranked by lifetime sales and recency.
 
 import type { AlaraTool, AlaraToolContext, ToolResult } from './types';
-import type { Customer, StockItem, Supplier } from '@/context/AppContext';
+import type { Customer, StockItem, Supplier, SupplierInvoice } from '@/context/AppContext';
 import { MAX_BATCH } from './guardrails';
 
 const pkr = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
@@ -624,6 +624,642 @@ const listSuppliers: AlaraTool = {
   },
 };
 
+type SupplierPayableStatus = 'all' | 'paid' | 'pending' | 'due_soon' | 'overdue' | 'draft';
+type SupplierSort = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc' | 'supplier_asc';
+
+const SUPPLIER_DUE_DAYS = 7;
+const DAY_MS = 86_400_000;
+
+function supplierInvoiceDate(inv: SupplierInvoice): Date | null {
+  return parseInvoiceDate(inv.date);
+}
+
+function todayStart(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function daysSince(date: Date): number {
+  return Math.max(0, Math.floor((todayStart().getTime() - date.getTime()) / DAY_MS));
+}
+
+function payableStatus(inv: SupplierInvoice): 'paid' | 'pending' | 'due_soon' | 'overdue' {
+  if (inv.status === 'Paid') return 'paid';
+  const date = supplierInvoiceDate(inv);
+  if (!date) return 'pending';
+  return daysSince(date) > SUPPLIER_DUE_DAYS ? 'overdue' : 'due_soon';
+}
+
+function invoiceMatchesStatus(inv: SupplierInvoice, status: SupplierPayableStatus): boolean {
+  if (status === 'all') return true;
+  if (status === 'draft' || status === 'pending') return inv.status === 'Draft';
+  return payableStatus(inv) === status;
+}
+
+function filterSupplierInvoices(
+  invoices: SupplierInvoice[],
+  ctx: AlaraToolContext,
+  args: Record<string, unknown>,
+): { rows: SupplierInvoice[]; supplier?: Supplier; filters: string[]; error?: ToolResult } {
+  const filters: string[] = [];
+  let supplier: Supplier | undefined;
+  const supplierQuery = String(args.supplier ?? '').trim();
+  if (supplierQuery) {
+    const resolved = resolveSupplier(supplierQuery, ctx.suppliers);
+    if (resolved.candidates) {
+      return {
+        rows: [],
+        filters,
+        error: disambiguationGeneric(
+          String(args.__toolName ?? 'supplier_purchase_analysis'),
+          args,
+          supplierQuery,
+          'supplier',
+          'supplier',
+          resolved.candidates.map((s) => ({ id: s.id, name: s.name, meta: `${s.category} - ${s.status}` })),
+        ),
+      };
+    }
+    if (!resolved.supplier) {
+      return { rows: [], filters, error: err(`"${supplierQuery}" naam ka supplier nahi mila.`, 'supplier_not_found') };
+    }
+    supplier = resolved.supplier;
+    filters.push(`supplier=${supplier.name}`);
+  }
+
+  const status = String(args.status ?? 'all').toLowerCase() as SupplierPayableStatus;
+  if (status !== 'all') filters.push(`status=${status}`);
+
+  const start = args.startDate ? parseInvoiceDate(String(args.startDate)) : null;
+  const end = args.endDate ? parseInvoiceDate(String(args.endDate)) : null;
+  if (start) filters.push(`from=${start.toISOString().slice(0, 10)}`);
+  if (end) filters.push(`to=${end.toISOString().slice(0, 10)}`);
+
+  const item = String(args.item ?? '').trim().toLowerCase();
+  if (item) filters.push(`item=${item}`);
+  const minAmount = Number(args.minAmount ?? Number.NEGATIVE_INFINITY);
+  const maxAmount = Number(args.maxAmount ?? Number.POSITIVE_INFINITY);
+  if (Number.isFinite(minAmount)) filters.push(`min_amount=${minAmount}`);
+  if (Number.isFinite(maxAmount)) filters.push(`max_amount=${maxAmount}`);
+
+  let rows = invoices.slice();
+  if (supplier) rows = rows.filter((inv) => inv.supplierId === supplier.id);
+  rows = rows.filter((inv) => invoiceMatchesStatus(inv, status));
+  if (start) rows = rows.filter((inv) => {
+    const d = supplierInvoiceDate(inv);
+    return Boolean(d && d.getTime() >= start.getTime());
+  });
+  if (end) rows = rows.filter((inv) => {
+    const d = supplierInvoiceDate(inv);
+    return Boolean(d && d.getTime() <= end.getTime());
+  });
+  if (item) rows = rows.filter((inv) => inv.items.some((it) => it.name.toLowerCase().includes(item)));
+  rows = rows.filter((inv) => inv.amount >= minAmount && inv.amount <= maxAmount);
+
+  const sort = String(args.sort ?? 'date_desc') as SupplierSort;
+  rows.sort((a, b) => {
+    if (sort === 'date_asc') return a.date.localeCompare(b.date);
+    if (sort === 'amount_desc') return b.amount - a.amount;
+    if (sort === 'amount_asc') return a.amount - b.amount;
+    if (sort === 'supplier_asc') return a.supplierName.localeCompare(b.supplierName);
+    return b.date.localeCompare(a.date);
+  });
+  filters.push(`sort=${sort}`);
+
+  return { rows, supplier, filters };
+}
+
+function supplierInvoiceLineSummary(inv: SupplierInvoice): string {
+  const first = inv.items[0];
+  if (!first) return 'No line items';
+  const extra = inv.items.length > 1 ? ` +${inv.items.length - 1} more` : '';
+  return `${first.name} x ${first.quantity}${extra}`;
+}
+
+function friendlySupplierView(filters: string[]): string {
+  const parts = filters
+    .filter((f) => !f.startsWith('sort=') && !f.startsWith('dataset='))
+    .map((f) => {
+      const [key, ...rest] = f.split('=');
+      const value = rest.join('=');
+      if (!value) return '';
+      if (key === 'supplier') return value;
+      if (key === 'status') {
+        const labels: Record<string, string> = {
+          paid: 'paid invoices',
+          pending: 'pending invoices',
+          due_soon: 'due soon',
+          overdue: 'overdue invoices',
+          draft: 'draft invoices',
+        };
+        return labels[value] ?? value;
+      }
+      if (key === 'from') return `from ${value}`;
+      if (key === 'to') return `until ${value}`;
+      if (key === 'item') return `item: ${value}`;
+      if (key === 'min_amount') return `minimum ${pkr(Number(value))}`;
+      if (key === 'max_amount') return `maximum ${pkr(Number(value))}`;
+      return value;
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join(' - ') : 'all supplier records';
+}
+
+function supplierActionSteps(supplier?: Supplier): NextStep[] {
+  const label = supplier ? supplier.name : 'suppliers';
+  const promptName = supplier ? `${supplier.name} ` : '';
+  return [
+    {
+      label: `${label} payables dekho`,
+      prompt: `${promptName}supplier payables dikhao`,
+      reason: 'Pending, due-soon aur overdue invoices',
+      tone: 'normal',
+    },
+    {
+      label: `${label} CSV export karo`,
+      prompt: `${promptName}supplier purchases CSV mein do`,
+      reason: 'Filtered rows download ke liye',
+      tone: 'opportunity',
+    },
+  ] satisfies NextStep[];
+}
+
+const supplierPurchaseAnalysis: AlaraTool = {
+  name: 'supplier_purchase_analysis',
+  tier: 'read',
+  description:
+    'Analyze supplier purchases by supplier, item, date range, invoice/payment status, rank suppliers, and show totals, average order value and contribution. Never invent totals.',
+  parameters: {
+    type: 'object',
+    properties: {
+      supplier: { type: 'string', description: 'Supplier name or partial name.' },
+      item: { type: 'string', description: 'Filter by purchased item name.' },
+      status: { type: 'string', enum: ['all', 'paid', 'pending', 'due_soon', 'overdue', 'draft'] },
+      startDate: { type: 'string', description: 'YYYY-MM-DD inclusive start date.' },
+      endDate: { type: 'string', description: 'YYYY-MM-DD inclusive end date.' },
+      sort: { type: 'string', enum: ['date_desc', 'date_asc', 'amount_desc', 'amount_asc', 'supplier_asc'] },
+      limit: { type: 'integer' },
+    },
+  },
+  preview: (args, ctx) => {
+    const filtered = filterSupplierInvoices(ctx.supplierInvoices, ctx, { ...args, __toolName: 'supplier_purchase_analysis' });
+    if (filtered.error) return filtered.error;
+    const limit = Math.min(Math.max(Number(args.limit ?? 8) || 8, 1), 25);
+    const rows = filtered.rows.slice(0, limit);
+    if (filtered.rows.length === 0) {
+      return {
+        ok: true,
+        text: 'Is supplier purchase filter pe koi data nahi mila. Date range ya status change karke try karein.',
+        cardType: 'insight',
+        cardData: {
+          title: 'Supplier Purchase Analysis',
+          stats: [{ label: 'Records', value: 0 }],
+          missing: [`Showing: ${friendlySupplierView(filtered.filters)}.`],
+          steps: [{ label: 'All supplier purchases dekho', prompt: 'supplier purchases dikhao', reason: 'Puri purchase list', tone: 'normal' }],
+        },
+        data: { count: 0 },
+      };
+    }
+
+    const total = filtered.rows.reduce((sum, inv) => sum + inv.amount, 0);
+    const avg = total / filtered.rows.length;
+    const paid = filtered.rows.filter((inv) => inv.status === 'Paid').reduce((sum, inv) => sum + inv.amount, 0);
+    const outstanding = filtered.rows.filter((inv) => inv.status === 'Draft').reduce((sum, inv) => sum + inv.amount, 0);
+    const supplierTotals = new Map<string, { name: string; amount: number; count: number }>();
+    for (const inv of filtered.rows) {
+      const current = supplierTotals.get(inv.supplierId) ?? { name: inv.supplierName, amount: 0, count: 0 };
+      current.amount += inv.amount;
+      current.count += 1;
+      supplierTotals.set(inv.supplierId, current);
+    }
+    const ranked = Array.from(supplierTotals.values()).sort((a, b) => b.amount - a.amount);
+    const top = ranked[0];
+    const topShare = top && total > 0 ? Math.round((top.amount / total) * 100) : 0;
+    const latest = filtered.rows.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
+
+    return {
+      ok: true,
+      text: `${filtered.supplier?.name ?? 'Suppliers'} purchase analysis: ${pkr(total)} total, ${filtered.rows.length} records, avg order ${pkr(avg)}.`,
+      cardType: 'insight',
+      cardData: {
+        title: filtered.supplier ? `${filtered.supplier.name} - Purchases` : 'Supplier Purchase Analysis',
+        stats: [
+          { label: 'Total Purchases', value: pkr(total) },
+          { label: 'Records', value: filtered.rows.length },
+          { label: 'Avg Order', value: pkr(avg) },
+          { label: 'Paid', value: pkr(paid) },
+          { label: 'Outstanding', value: pkr(outstanding) },
+          { label: 'Top Share', value: top ? `${top.name} (${topShare}%)` : 'N/A' },
+        ],
+        context: [
+          `Showing: ${friendlySupplierView(filtered.filters)}.`,
+          latest ? `Last transaction: ${latest.date} - ${latest.supplierName} - ${pkr(latest.amount)} (${latest.status}).` : '',
+          ...rows.map((inv) => `${inv.date} - ${inv.supplierName} - ${supplierInvoiceLineSummary(inv)} - ${pkr(inv.amount)} (${inv.status})`),
+        ].filter(Boolean),
+        steps: supplierActionSteps(filtered.supplier),
+      },
+      data: {
+        count: filtered.rows.length,
+        total,
+        invoice_ids: filtered.rows.map((inv) => inv.id),
+        supplier_totals: ranked,
+      },
+    };
+  },
+};
+
+const supplierPayables: AlaraTool = {
+  name: 'supplier_payables',
+  tier: 'read',
+  description:
+    'Show supplier paid, pending, due-soon and overdue invoices. Calculates outstanding balance and overdue days from Draft invoices using the platform due window.',
+  parameters: {
+    type: 'object',
+    properties: {
+      supplier: { type: 'string', description: 'Supplier name or partial name.' },
+      status: { type: 'string', enum: ['all', 'paid', 'pending', 'due_soon', 'overdue'] },
+      limit: { type: 'integer' },
+    },
+  },
+  preview: (args, ctx) => {
+    const filtered = filterSupplierInvoices(ctx.supplierInvoices, ctx, { ...args, __toolName: 'supplier_payables' });
+    if (filtered.error) return filtered.error;
+    const rows = filtered.rows;
+    const limit = Math.min(Math.max(Number(args.limit ?? 10) || 10, 1), 30);
+    const outstandingRows = rows.filter((inv) => inv.status === 'Draft');
+    const overdueRows = rows.filter((inv) => payableStatus(inv) === 'overdue');
+    const outstanding = outstandingRows.reduce((sum, inv) => sum + inv.amount, 0);
+    const overdue = overdueRows.reduce((sum, inv) => sum + inv.amount, 0);
+    const paid = rows.filter((inv) => inv.status === 'Paid').reduce((sum, inv) => sum + inv.amount, 0);
+    const displayRows = rows.slice(0, limit);
+
+    return {
+      ok: true,
+      text:
+        rows.length === 0
+          ? 'Is payable filter pe koi supplier invoice nahi mila.'
+          : `${filtered.supplier?.name ?? 'Supplier'} payables: ${pkr(outstanding)} outstanding, ${pkr(overdue)} overdue.`,
+      cardType: 'insight',
+      cardData: {
+        title: filtered.supplier ? `${filtered.supplier.name} - Payables` : 'Supplier Payables',
+        stats: [
+          { label: 'Outstanding', value: pkr(outstanding) },
+          { label: 'Overdue', value: pkr(overdue) },
+          { label: 'Paid Total', value: pkr(paid) },
+          { label: 'Invoices', value: rows.length },
+        ],
+        context: [
+          `Showing: ${friendlySupplierView(filtered.filters)}. Draft supplier bills are treated as due after ${SUPPLIER_DUE_DAYS} days.`,
+          ...displayRows.map((inv) => {
+            const d = supplierInvoiceDate(inv);
+            const overdueDays = d && payableStatus(inv) === 'overdue' ? Math.max(0, daysSince(d) - SUPPLIER_DUE_DAYS) : 0;
+            const due = d ? addDays(d, SUPPLIER_DUE_DAYS).toISOString().slice(0, 10) : 'N/A';
+            return `${inv.id} - ${inv.supplierName} - ${pkr(inv.amount)} - ${payableStatus(inv)} - due ${due}${overdueDays ? ` (${overdueDays} overdue days)` : ''}`;
+          }),
+        ],
+        steps: supplierActionSteps(filtered.supplier),
+      },
+      data: {
+        count: rows.length,
+        outstanding,
+        overdue,
+        invoice_ids: rows.map((inv) => inv.id),
+      },
+    };
+  },
+};
+
+const draftSupplierInvoice: AlaraTool = {
+  name: 'draft_supplier_invoice',
+  tier: 'write',
+  description:
+    'Generate a supplier invoice preview from selected Draft purchase/receiving records. Never creates/posts permanently until user confirms the preview.',
+  parameters: {
+    type: 'object',
+    properties: {
+      supplier: { type: 'string', description: 'Supplier name or partial name. Required unless invoiceIds are specific.' },
+      invoiceIds: { type: 'array', items: { type: 'string' }, description: 'Draft supplier invoice or receiving record ids to include.' },
+      discount: { type: 'number' },
+      tax: { type: 'number' },
+      deliveryCharges: { type: 'number' },
+      paidAmount: { type: 'number' },
+      dueDate: { type: 'string', description: 'YYYY-MM-DD due date for preview.' },
+    },
+  },
+  preview: (args, ctx) => {
+    const ids = Array.isArray(args.invoiceIds) ? (args.invoiceIds as unknown[]).map(String) : [];
+    let supplier: Supplier | undefined;
+    if (args.supplier) {
+      const resolved = resolveSupplier(String(args.supplier), ctx.suppliers);
+      if (resolved.candidates)
+        return disambiguationGeneric(
+          'draft_supplier_invoice',
+          args,
+          String(args.supplier),
+          'supplier',
+          'supplier',
+          resolved.candidates.map((s) => ({ id: s.id, name: s.name, meta: `${s.category} - ${s.status}` })),
+        );
+      supplier = resolved.supplier;
+    }
+    let source = ctx.supplierInvoices.filter((inv) => inv.status === 'Draft');
+    if (ids.length) source = source.filter((inv) => ids.includes(inv.id));
+    if (supplier) {
+      const supplierId = supplier.id;
+      source = source.filter((inv) => inv.supplierId === supplierId);
+    }
+    const suppliers = Array.from(new Set(source.map((inv) => inv.supplierId)));
+    if (!supplier && suppliers.length === 1) supplier = ctx.suppliers.find((s) => s.id === suppliers[0]);
+    if (!supplier) {
+      return err('Supplier invoice preview ke liye supplier ka naam chahiye, ya specific draft invoice ids dein.', 'supplier_required');
+    }
+    const selectedSupplier = supplier;
+    if (source.length === 0) {
+      return err(`${selectedSupplier.name} ke liye koi uninvoiced Draft purchase/receiving record nahi mila.`, 'no_draft_records');
+    }
+
+    const merged = new Map<string, { name: string; quantity: number; unit: string; price: number; total: number }>();
+    for (const inv of source) {
+      for (const item of inv.items) {
+        const key = `${item.name}|${item.unit}|${item.price}`;
+        const current = merged.get(key) ?? { name: item.name, quantity: 0, unit: item.unit, price: item.price, total: 0 };
+        current.quantity += item.quantity;
+        current.total += item.total;
+        merged.set(key, current);
+      }
+    }
+    const items = Array.from(merged.values());
+    const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    const discount = Math.max(0, Number(args.discount ?? 0) || 0);
+    const tax = Math.max(0, Number(args.tax ?? 0) || 0);
+    const deliveryCharges = Math.max(0, Number(args.deliveryCharges ?? 0) || 0);
+    const paidAmount = Math.max(0, Number(args.paidAmount ?? 0) || 0);
+    const grandTotal = Math.max(0, subtotal - discount + tax + deliveryCharges);
+    const balance = Math.max(0, grandTotal - paidAmount);
+    const defaultDue = addDays(todayStart(), SUPPLIER_DUE_DAYS).toISOString().slice(0, 10);
+    const dueDate = String(args.dueDate ?? defaultDue);
+
+    return {
+      ok: true,
+      text: `${selectedSupplier.name} ka supplier invoice preview ready hai: ${pkr(grandTotal)} total, balance ${pkr(balance)}. Confirm ke baghair final invoice create nahi hoga.`,
+      cardType: 'invoice',
+      cardData: {
+        customer_id: selectedSupplier.id,
+        customer_name: selectedSupplier.name,
+        invoice_label: 'Supplier Invoice Draft',
+        sourceInvoiceIds: source.map((inv) => inv.id),
+        items: items.map((item) => ({ name: item.name, qty: item.quantity, total: item.total })),
+        subtotal,
+        discount,
+        tax,
+        deliveryCharges,
+        paidAmount,
+        balance,
+        dueDate,
+        total: grandTotal,
+        pending: true,
+      },
+      data: { supplier_id: selectedSupplier.id, source_invoice_ids: source.map((inv) => inv.id), total: grandTotal },
+    };
+  },
+  commit: (args, ctx) => {
+    const resolved = resolveSupplier(String(args.supplier ?? ''), ctx.suppliers);
+    const supplier = resolved.supplier;
+    if (!supplier) return err('Supplier nahi mila.', 'supplier_not_found');
+    const ids = Array.isArray(args.invoiceIds) ? (args.invoiceIds as unknown[]).map(String) : [];
+    let source = ctx.supplierInvoices.filter((inv) => inv.status === 'Draft' && inv.supplierId === supplier.id);
+    if (ids.length) source = source.filter((inv) => ids.includes(inv.id));
+    if (source.length === 0) return err('Confirm karne ke liye koi Draft source record nahi mila.', 'no_draft_records');
+
+    const items = source.flatMap((inv) => inv.items).map((item) => ({ ...item }));
+    const discount = Math.max(0, Number(args.discount ?? 0) || 0);
+    const invoice = ctx.recordPurchase(
+      supplier.id,
+      items,
+      discount,
+      `Supplier invoice created via Alara from ${source.map((inv) => inv.id).join(', ')}`,
+      { status: 'Draft', invoiceNumber: `ALARA-${Date.now().toString().slice(-6)}` },
+    );
+    return {
+      ok: true,
+      text: `Supplier invoice draft ${invoice.id} create ho gaya - ${supplier.name}, ${pkr(invoice.amount)}. View/download ya payment record kar sakte hain.`,
+      cardType: 'invoice',
+      cardData: {
+        invoice_id: invoice.id,
+        customer_id: supplier.id,
+        customer_name: supplier.name,
+        items: invoice.items.map((item) => ({ name: item.name, qty: item.quantity, total: item.total })),
+        total: invoice.amount,
+      },
+      navigateTo: `/suppliers/${supplier.id}`,
+    };
+  },
+};
+
+function csvEscape(value: unknown): string {
+  const raw = value == null ? '' : String(value);
+  return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function buildCsv(rows: Record<string, unknown>[], columns: string[]): string {
+  const header = columns.map(csvEscape).join(',');
+  const body = rows.map((row) => columns.map((col) => csvEscape(row[col])).join(',')).join('\n');
+  return `${header}\n${body}`;
+}
+
+const exportSupplierCsv: AlaraTool = {
+  name: 'export_supplier_csv',
+  tier: 'read',
+  description:
+    'Prepare a CSV-ready supplier dataset using the exact filtered records currently shown: suppliers, supplier invoices, or supplier purchase line items. Show record count, columns, filters and 5-row preview before export.',
+  parameters: {
+    type: 'object',
+    properties: {
+      dataset: { type: 'string', enum: ['suppliers', 'supplier_invoices', 'supplier_purchase_items'] },
+      supplier: { type: 'string' },
+      status: { type: 'string', enum: ['all', 'paid', 'pending', 'due_soon', 'overdue', 'draft'] },
+      startDate: { type: 'string' },
+      endDate: { type: 'string' },
+      item: { type: 'string' },
+      minAmount: { type: 'number' },
+      maxAmount: { type: 'number' },
+      sort: { type: 'string', enum: ['date_desc', 'date_asc', 'amount_desc', 'amount_asc', 'supplier_asc'] },
+      columns: { type: 'array', items: { type: 'string' } },
+      limit: { type: 'integer' },
+    },
+  },
+  preview: (args, ctx) => {
+    const dataset = String(args.dataset ?? 'supplier_invoices');
+    const limit = Math.min(Math.max(Number(args.limit ?? 500) || 500, 1), 5000);
+    const requestedColumns = Array.isArray(args.columns)
+      ? (args.columns as unknown[]).map(String).filter(Boolean)
+      : [];
+    let rows: Record<string, unknown>[] = [];
+    let filters: string[] = [];
+
+    if (dataset === 'suppliers') {
+      rows = ctx.suppliers.map((s) => {
+        const invoices = ctx.supplierInvoices.filter((inv) => inv.supplierId === s.id);
+        const paid = invoices.filter((inv) => inv.status === 'Paid').reduce((sum, inv) => sum + inv.amount, 0);
+        const outstanding = invoices.filter((inv) => inv.status === 'Draft').reduce((sum, inv) => sum + inv.amount, 0);
+        const last = invoices.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
+        return {
+          supplier_id: s.id,
+          supplier_name: s.name,
+          contact_person: s.contactPerson,
+          phone: s.phone,
+          category: s.category,
+          status: s.status,
+          last_transaction_date: last?.date ?? '',
+          lifetime_paid_purchases: paid,
+          outstanding_balance: outstanding,
+        };
+      });
+      filters = ['Supplier directory'];
+      const supplierQuery = String(args.supplier ?? '').trim().toLowerCase();
+      if (supplierQuery) {
+        rows = rows.filter((row) => String(row.supplier_name).toLowerCase().includes(supplierQuery));
+        filters.push(`Supplier name includes ${supplierQuery}`);
+      }
+      const status = String(args.status ?? 'all').toLowerCase();
+      if (status !== 'all') {
+        rows = rows.filter((row) => String(row.status).toLowerCase() === status);
+        filters.push(`${status} suppliers`);
+      }
+    } else {
+      const filtered = filterSupplierInvoices(ctx.supplierInvoices, ctx, { ...args, __toolName: 'export_supplier_csv' });
+      if (filtered.error) return filtered.error;
+      filters = [
+        dataset === 'supplier_purchase_items' ? 'Supplier purchase items' : 'Supplier invoices',
+        friendlySupplierView(filtered.filters),
+      ];
+      if (dataset === 'supplier_purchase_items') {
+        rows = filtered.rows.flatMap((inv) =>
+          inv.items.map((item) => ({
+            invoice_id: inv.id,
+            supplier_id: inv.supplierId,
+            supplier_name: inv.supplierName,
+            invoice_date: inv.date,
+            payment_status: payableStatus(inv),
+            platform_status: inv.status,
+            item_name: item.name,
+            quantity: item.quantity,
+            unit: item.unit,
+            unit_price: item.price,
+            line_total: item.total,
+            invoice_total: inv.amount,
+          })),
+        );
+      } else {
+        rows = filtered.rows.map((inv) => {
+          const date = supplierInvoiceDate(inv);
+          return {
+            invoice_id: inv.id,
+            supplier_id: inv.supplierId,
+            supplier_name: inv.supplierName,
+            invoice_date: inv.date,
+            supplier_invoice_number: inv.invoiceNumber ?? '',
+            payment_status: payableStatus(inv),
+            platform_status: inv.status,
+            item_summary: supplierInvoiceLineSummary(inv),
+            item_count: inv.items.length,
+            amount: inv.amount,
+            discount: inv.discount,
+            due_date: date ? addDays(date, SUPPLIER_DUE_DAYS).toISOString().slice(0, 10) : '',
+            notes: inv.notes,
+          };
+        });
+      }
+    }
+
+    rows = rows.slice(0, limit);
+    const defaultColumns = rows[0] ? Object.keys(rows[0]) : [];
+    const columns = requestedColumns.length
+      ? requestedColumns.filter((col) => defaultColumns.includes(col))
+      : defaultColumns;
+    const previewRows = rows.slice(0, 5).map((row) =>
+      Object.fromEntries(columns.map((col) => [col, row[col]])),
+    );
+    const csvRows = rows.map((row) => Object.fromEntries(columns.map((col) => [col, row[col]])));
+    const csv = buildCsv(csvRows, columns);
+    const filename = `${dataset}-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    return {
+      ok: true,
+      text: `${rows.length} records CSV ke liye ready hain. Pehle preview dekh lein, phir Download CSV dabayein.`,
+      cardType: 'csv_export',
+      cardData: {
+        title: 'Supplier CSV Preview',
+        filename,
+        count: rows.length,
+        columns,
+        filters,
+        previewRows,
+        csv,
+      },
+      data: { count: rows.length, columns, filters, filename },
+    };
+  },
+};
+
+const exportCustomerRankingCsv: AlaraTool = {
+  name: 'export_customer_ranking_csv',
+  tier: 'read',
+  description:
+    'Export the top-customers-by-sales ranking shown by show_visualization (kind=top_customers) as a ' +
+    'downloadable CSV — same date range and limit, never lifetime sales.',
+  parameters: {
+    type: 'object',
+    properties: {
+      period_value: { type: 'integer', minimum: 1 },
+      period_unit: { type: 'string', enum: ['days', 'weeks', 'months', 'years'] },
+      date_from: { type: 'string' },
+      date_to: { type: 'string' },
+      limit: { type: 'integer', minimum: 1, description: 'How many ranked customers to export. Default 6.' },
+    },
+  },
+  preview: (args, ctx) => {
+    const range = resolveVisualizationRange(args);
+    const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 50);
+    const ranked = rankCustomersBySales(ctx, range, limit);
+    const rangeLabel = formatRange(range.start, range.end);
+    const rows = ranked.map((r, i) => ({
+      rank: i + 1,
+      customer_id: r.c.id,
+      customer_name: r.c.name,
+      sales: r.value,
+      invoice_count: r.count,
+    }));
+    const columns = ['rank', 'customer_id', 'customer_name', 'sales', 'invoice_count'];
+    const previewRows = rows.slice(0, 5);
+    const csv = buildCsv(rows, columns);
+    const filename = `top-customers-${isoDate(range.start)}-to-${isoDate(range.end)}.csv`;
+
+    return {
+      ok: true,
+      text: `${rows.length} customers ki ranking (${rangeLabel}) CSV ke liye ready hai. Pehle preview dekh lein, phir Download CSV dabayein.`,
+      cardType: 'csv_export',
+      cardData: {
+        title: 'Top Customers CSV Preview',
+        filename,
+        count: rows.length,
+        columns,
+        filters: [rangeLabel, `Top ${limit}`],
+        previewRows,
+        csv,
+      },
+      data: { count: rows.length, filename, date_from: isoDate(range.start), date_to: isoDate(range.end) },
+    };
+  },
+};
+
 // ── Per-customer analytics (sales + behaviour) ───────────────────────────────
 interface CustomerStats {
   lifetime: number;   // total sales value (sum of this customer's invoices)
@@ -839,6 +1475,140 @@ function stepsForShop(ctx: AlaraToolContext): NextStep[] {
   return steps.slice(0, 5);
 }
 
+type PeriodUnit = 'days' | 'weeks' | 'months' | 'years';
+type GroupBy = 'day' | 'week' | 'month' | 'year' | 'auto';
+type TrendRow = { amount: number; date: string };
+
+function isoDate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseDateOnly(value: unknown): Date | null {
+  if (!value) return null;
+  const parsed = parseInvoiceDate(String(value));
+  if (!parsed) return null;
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+}
+
+function subtractMonths(date: Date, months: number): Date {
+  const next = new Date(date);
+  const day = next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth() - months);
+  const maxDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, maxDay));
+  return next;
+}
+
+function resolveVisualizationRange(args: Record<string, unknown>): { start: Date; end: Date; groupBy: Exclude<GroupBy, 'auto'> } {
+  const explicitEnd = parseDateOnly(args.date_to);
+  const end = explicitEnd ?? todayStart();
+  const explicitStart = parseDateOnly(args.date_from);
+  let start: Date;
+  if (explicitStart) {
+    start = explicitStart;
+  } else {
+    const rawValue = Number(args.period_value ?? 30);
+    const value = Number.isFinite(rawValue) && rawValue > 0 ? Math.floor(rawValue) : 30;
+    const unit = String(args.period_unit ?? 'days') as PeriodUnit;
+    start = new Date(end);
+    if (unit === 'days') start.setDate(end.getDate() - value + 1);
+    else if (unit === 'weeks') start.setDate(end.getDate() - value * 7 + 1);
+    else if (unit === 'months') start = subtractMonths(end, value);
+    else if (unit === 'years') start = subtractMonths(end, value * 12);
+    else start.setDate(end.getDate() - 29);
+  }
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  const requestedGroup = String(args.group_by ?? 'auto') as GroupBy;
+  if (requestedGroup !== 'auto' && ['day', 'week', 'month', 'year'].includes(requestedGroup)) {
+    return { start, end, groupBy: requestedGroup as Exclude<GroupBy, 'auto'> };
+  }
+  const totalDays = Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
+  if (totalDays <= 31) return { start, end, groupBy: 'day' };
+  if (totalDays <= 120) return { start, end, groupBy: 'week' };
+  return { start, end, groupBy: 'month' };
+}
+
+const formatRange = (start: Date, end: Date) => `${shortDate(start)} – ${shortDate(end)}`;
+
+interface CustomerRanking {
+  c: Customer;
+  value: number;
+  count: number;
+}
+
+/** Customers ranked by sales WITHIN a date range (never "lifetime") — shared by
+ *  the top_customers visualization and its CSV export so both agree exactly. */
+function rankCustomersBySales(
+  ctx: AlaraToolContext,
+  range: { start: Date; end: Date },
+  limit: number,
+): CustomerRanking[] {
+  const totals = new Map<string, { value: number; count: number }>();
+  for (const inv of ctx.invoices) {
+    const date = parseDateOnly(inv.date);
+    if (!date || date.getTime() < range.start.getTime() || date.getTime() > range.end.getTime()) continue;
+    const current = totals.get(inv.customerId) ?? { value: 0, count: 0 };
+    current.value += inv.amount;
+    current.count += 1;
+    totals.set(inv.customerId, current);
+  }
+  return ctx.customers
+    .map((c) => ({ c, value: totals.get(c.id)?.value ?? 0, count: totals.get(c.id)?.count ?? 0 }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, limit);
+}
+
+function groupKey(date: Date, groupBy: Exclude<GroupBy, 'auto'>): { key: string; label: string } {
+  if (groupBy === 'day') return { key: isoDate(date), label: shortDate(date) };
+  if (groupBy === 'week') {
+    const start = new Date(date);
+    start.setDate(date.getDate() - date.getDay() + 1);
+    return { key: isoDate(start), label: `Week ${shortDate(start)}` };
+  }
+  if (groupBy === 'month') {
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return { key, label: date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) };
+  }
+  return { key: String(date.getFullYear()), label: String(date.getFullYear()) };
+}
+
+function buildTrendPoints(rows: TrendRow[], groupBy: Exclude<GroupBy, 'auto'>) {
+  const buckets = new Map<string, { date: string; label: string; value: number; count: number }>();
+  for (const row of rows) {
+    const date = parseDateOnly(row.date);
+    if (!date) continue;
+    const bucket = groupKey(date, groupBy);
+    const current = buckets.get(bucket.key) ?? { date: bucket.key, label: bucket.label, value: 0, count: 0 };
+    current.value += row.amount;
+    current.count += 1;
+    buckets.set(bucket.key, current);
+  }
+  return Array.from(buckets.values())
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((p, i, arr) => {
+      const previous = arr[i - 1]?.value ?? 0;
+      const changePct = previous > 0 ? Math.round(((p.value - previous) / previous) * 100) : null;
+      return {
+        date: p.date,
+        label: p.label,
+        value: p.value,
+        count: p.count,
+        average: p.count > 0 ? Math.round(p.value / p.count) : 0,
+        changePct,
+        meta: `${pkr(p.value)} · ${p.count} bills`,
+        tone: 'normal',
+      };
+    });
+}
+
 const showVisualization: AlaraTool = {
   name: 'show_visualization',
   tier: 'read',
@@ -849,23 +1619,30 @@ const showVisualization: AlaraTool = {
     'chartType (HOW to render it) — pick using this rule: ONE number → kpi. Comparison between items → bar. ' +
     'Change over time → line. Percentage split of a whole → donut. Progress toward a target → progress. ' +
     "If chartType is omitted, each kind renders with its natural default (sales_trend→line, top_customers/product_mix/inventory_risk→bar, " +
-    'customer_type_split→donut, reorder_progress→progress) — only override chartType when the user explicitly asks for a different chart style.',
+    'customer_type_split→donut, reorder_progress→progress) — only override chartType when the user explicitly asks for a different chart style. ' +
+    'top_customers ALWAYS respects both the requested date range (period_value/period_unit or date_from/date_to — defaults to last 30 days) ' +
+    'and the requested top-N (limit, e.g. "top 3 customers" → limit=3) — it ranks by sales WITHIN that range, never lifetime sales.',
   parameters: {
     type: 'object',
     properties: {
       kind: {
         type: 'string',
-        enum: ['sales_trend', 'top_customers', 'product_mix', 'inventory_risk', 'customer_type_split', 'reorder_progress'],
+        enum: ['sales_trend', 'supplier_purchase_trend', 'top_customers', 'product_mix', 'inventory_risk', 'customer_type_split', 'reorder_progress'],
         description: 'Which dataset to visualize.',
       },
       chartType: {
         type: 'string',
-        enum: ['kpi', 'bar', 'line', 'donut', 'progress'],
+        enum: ['line', 'area', 'bar', 'donut', 'kpi', 'progress'],
         description:
           'How to render it: kpi (one number), bar (comparison between items), line (change over time), ' +
           'donut (percentage split), progress (progress toward a target). Omit to use the kind’s natural default.',
       },
-      limit: { type: 'integer', description: 'Number of bars/rows to show. Default 6.' },
+      period_value: { type: 'integer', minimum: 1, description: 'Requested period quantity, e.g. 6 for "last 6 months".' },
+      period_unit: { type: 'string', enum: ['days', 'weeks', 'months', 'years'], description: 'Requested period unit.' },
+      date_from: { type: 'string', description: 'Explicit start date in YYYY-MM-DD format.' },
+      date_to: { type: 'string', description: 'Explicit end date in YYYY-MM-DD format.' },
+      group_by: { type: 'string', enum: ['day', 'week', 'month', 'year', 'auto'], description: 'Grouping for trend charts. Use auto unless the user asks.' },
+      limit: { type: 'integer', minimum: 1, description: 'Number of bars/rows to show, e.g. "top 3 customers" → 3. Default 6, clamped to 3–10.' },
     },
     required: ['kind'],
   },
@@ -874,91 +1651,145 @@ const showVisualization: AlaraTool = {
     const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 3), 10);
     const chartTypeOverride = args.chartType ? String(args.chartType) : undefined;
 
-    if (kind === 'sales_trend') {
-      const dated = ctx.invoices
+    if (kind === 'sales_trend' || kind === 'supplier_purchase_trend') {
+      const range = resolveVisualizationRange(args);
+      const trendSource = kind === 'supplier_purchase_trend' ? ctx.supplierInvoices : ctx.invoices;
+      const dated = trendSource
         .map((i) => ({ invoice: i, date: parseInvoiceDate(i.date) }))
         .filter((x): x is { invoice: typeof x.invoice; date: Date } => Boolean(x.date))
+        .filter((x) => x.date.getTime() >= range.start.getTime() && x.date.getTime() <= range.end.getTime())
         .sort((a, b) => a.date.getTime() - b.date.getTime());
-      const buckets = new Map<string, { label: string; value: number; count: number }>();
+      const buckets = new Map<string, { date: string; label: string; value: number; count: number }>();
       for (const row of dated) {
-        const key = row.date.toISOString().slice(0, 10);
-        const current = buckets.get(key) ?? { label: shortDate(row.date), value: 0, count: 0 };
+        const grouped = groupKey(row.date, range.groupBy);
+        const key = grouped.key;
+        const current = buckets.get(key) ?? { date: key, label: grouped.label, value: 0, count: 0 };
         current.value += row.invoice.amount;
         current.count += 1;
         buckets.set(key, current);
       }
-      const points = Array.from(buckets.values()).slice(-limit).map((p) => ({
+      const dailyPoints = Array.from(buckets.values()).map((p, i, arr) => {
+        const previous = arr[i - 1]?.value ?? 0;
+        const changePct = previous > 0 ? Math.round(((p.value - previous) / previous) * 100) : null;
+        return {
+          date: p.date,
+          label: p.label,
+          value: p.value,
+          count: p.count,
+          average: p.count > 0 ? Math.round(p.value / p.count) : 0,
+          changePct,
+          meta: `${pkr(p.value)} · ${p.count} bills`,
+          tone: 'normal',
+        };
+      });
+      const points = dailyPoints.map((p) => ({
         label: p.label,
         value: p.value,
-        meta: `${pkr(p.value)} · ${p.count} bills`,
+        count: p.count,
+        average: p.average,
+        changePct: p.changePct,
+        meta: p.meta,
         tone: 'normal',
       }));
       const total = points.reduce((s, p) => s + p.value, 0);
       const best = points.slice().sort((a, b) => b.value - a.value)[0];
+      const trendTitle = kind === 'supplier_purchase_trend' ? 'Supplier Purchase Trend' : 'Sales Trend';
       return {
         ok: true,
         text: `Sales trend visualization ready — ${points.length} periods, total ${pkr(total)}.`,
         cardType: 'visualization',
         cardData: {
-          title: 'Sales Trend',
-          chartType: chartTypeOverride ?? 'line',
+          kind,
+          title: trendTitle,
+          chartType: chartTypeOverride ?? 'area',
+          date_from: isoDate(range.start),
+          date_to: isoDate(range.end),
+          group_by: range.groupBy,
           stats: [
-            { label: 'Shown Total', value: pkr(total) },
-            { label: 'Invoices', value: dated.length },
+            { label: 'Total', value: pkr(total) },
+            { label: kind === 'supplier_purchase_trend' ? 'Purchase Bills' : 'Invoices', value: dated.length },
             { label: 'Best Period', value: best ? best.label : '—' },
           ],
           points,
+          dailyPoints,
           explanation: [
-            `Chart recent invoice dates se bana hai; har bar us date ki total billed sales dikhata hai.`,
-            best ? `${best.label} strongest period hai at ${best.meta}.` : 'No invoice date data available yet.',
+            `${isoDate(range.start)} se ${isoDate(range.end)} tak data ${range.groupBy} ke hisaab se group hua hai.`,
+            best ? `${best.label} strongest period hai at ${best.meta}.` : 'Is range mein koi record nahi mila.',
           ],
           steps: [
-            { label: 'Top customers ka chart dikhao', prompt: 'Top customers ka visualization dikhao', reason: 'Revenue kis customer se aa raha hai', tone: 'normal' },
-            { label: 'Reports page kholo', prompt: 'Reports kholo', reason: 'Detailed sales & invoices table', tone: 'normal' },
+            kind === 'supplier_purchase_trend'
+              ? { label: 'Supplier payables dekho', prompt: 'Supplier payables dikhao', reason: 'Pending aur overdue bills', tone: 'normal' }
+              : { label: 'Top customers ka chart dikhao', prompt: 'Top customers ka visualization dikhao', reason: 'Revenue kis customer se aa raha hai', tone: 'normal' },
           ],
         },
-        data: { kind, count: points.length, total },
+        data: { kind, count: points.length, total, date_from: isoDate(range.start), date_to: isoDate(range.end), group_by: range.groupBy },
       };
     }
 
     if (kind === 'top_customers') {
-      const ranked = ctx.customers
-        .map((c) => ({ c, lifetime: lifetimeSales(c, ctx) }))
-        .filter((r) => r.lifetime > 0)
-        .sort((a, b) => b.lifetime - a.lifetime)
-        .slice(0, limit);
-      const total = ranked.reduce((s, r) => s + r.lifetime, 0);
-      const top = ranked[0];
+      const range = resolveVisualizationRange(args);
+      const ranked = rankCustomersBySales(ctx, range, limit);
+      const shownTotal = ranked.reduce((s, r) => s + r.value, 0);
+      const shownInvoiceCount = ranked.reduce((s, r) => s + r.count, 0);
+      const leader = ranked[0];
+      const second = ranked[1];
+      const rangeLabel = formatRange(range.start, range.end);
+
+      const explanation: string[] = [];
+      if (leader) {
+        const share = shownTotal > 0 ? Math.round((leader.value / shownTotal) * 100) : 0;
+        explanation.push(`${leader.c.name} ne ${rangeLabel} mein ${pkr(leader.value)} ka business diya — displayed sales ka ${share}%.`);
+        if (second && second.value > 0) {
+          const lead = Math.round(((leader.value - second.value) / second.value) * 100);
+          explanation.push(`${leader.c.name} ${second.c.name} se ${lead}% aage hai.`);
+        } else {
+          explanation.push(`Is range mein sirf ${leader.c.name} ki recorded sales hain.`);
+        }
+      } else {
+        explanation.push(`${rangeLabel} mein koi customer sale record nahi mili.`);
+      }
+
       return {
         ok: true,
-        text: `Top customers visualization ready — ${ranked.length} customers ranked by lifetime sales.`,
+        text: leader
+          ? `Top ${ranked.length} customers (${rangeLabel}) — combined ${pkr(shownTotal)} across ${shownInvoiceCount} invoices.`
+          : `${rangeLabel} mein koi customer sales nahi mili.`,
         cardType: 'visualization',
         cardData: {
-          title: 'Top Customers by Lifetime Sales',
+          title: `Top ${ranked.length || limit} customers by sales`,
+          subtitle: rangeLabel,
           chartType: chartTypeOverride ?? 'bar',
           stats: [
-            { label: 'Customers', value: ranked.length },
-            { label: 'Shown Revenue', value: pkr(total) },
-            { label: 'Leader', value: top?.c.name ?? '—' },
+            { label: 'Customers Shown', value: ranked.length },
+            { label: 'Combined Sales', value: pkr(shownTotal) },
+            { label: 'Top Customer', value: leader?.c.name ?? '—' },
           ],
-          points: ranked.map((r) => ({
+          points: ranked.map((r, i) => ({
             label: r.c.name,
-            value: r.lifetime,
-            meta: pkr(r.lifetime),
+            value: r.value,
+            meta: `${pkr(r.value)} · ${r.count} invoice${r.count === 1 ? '' : 's'}`,
             tone: r.c.lastVisitDays >= 14 ? 'urgent' : 'opportunity',
+            rank: i + 1,
+            invoiceCount: r.count,
+            period: rangeLabel,
+            customerId: r.c.id,
           })),
-          explanation: [
-            'Ranking real invoices se lifetime sales sum karke banti hai.',
-            top ? `${top.c.name} currently sab se strong customer hai with ${pkr(top.lifetime)} recorded business.` : 'Abhi customer sales data missing hai.',
-          ],
-          steps: top
+          explanation,
+          steps: leader
             ? [
-              { label: `${top.c.name} ka profile kholo`, prompt: `${top.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
-              { label: 'Product mix visualization dikhao', prompt: 'Product mix ka visualization dikhao', reason: 'Kya items bik rahe hain', tone: 'opportunity' },
+              { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
+              { label: 'Inhi customers ke invoices dekho', prompt: 'Invoices kholo', reason: 'Displayed customers ki billing detail', tone: 'normal' },
+              { label: 'Ranking CSV mein export karo', prompt: `Top ${ranked.length} customers ki ranking CSV mein do`, reason: 'Sheet mein share/save karein', tone: 'normal' },
             ]
-            : [{ label: 'Record sale', prompt: 'Record sale page kholo', reason: 'Ranking banane ke liye sales chahiye', tone: 'normal' }],
+            : [{ label: 'Record sale', prompt: 'Record sale page kholo', reason: 'Ranking banane ke liye is range mein sales chahiye', tone: 'normal' }],
         },
-        data: { kind, customer_ids: ranked.map((r) => r.c.id) },
+        data: {
+          kind,
+          date_from: isoDate(range.start),
+          date_to: isoDate(range.end),
+          limit,
+          customer_ids: ranked.map((r) => r.c.id),
+        },
       };
     }
 
@@ -1636,6 +2467,10 @@ export const TOOLS: AlaraTool[] = [
   listInventory,
   getSupplier,
   listSuppliers,
+  supplierPurchaseAnalysis,
+  supplierPayables,
+  exportSupplierCsv,
+  exportCustomerRankingCsv,
   listAlerts,
   showVisualization,
   suggestNextSteps,
@@ -1646,6 +2481,7 @@ export const TOOLS: AlaraTool[] = [
   addCustomer,
   updateCustomer,
   createInvoice,
+  draftSupplierInvoice,
   recordStockIn,
   // comms
   draftReminder,

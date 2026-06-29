@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState } from 'react';
+import { SEED_INVOICES, SEED_SUPPLIER_INVOICES } from '@/data/seedHistory';
 
 export interface Customer {
   id: string;
@@ -710,7 +711,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     },
   ]);
 
-  const [invoices, setInvoices] = useState<Invoice[]>(() => buildSeedInvoices(customers));
+  const [invoices, setInvoices] = useState<Invoice[]>(SEED_INVOICES);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([
     {
@@ -765,146 +766,33 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     },
   ]);
 
-  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>([
-    {
-      id: 'PINV-1001',
-      supplierId: 'sup-grain',
-      supplierName: 'Al-Madina Grain Traders',
-      date: isoDaysAgo(6),
-      amount: 50000,
-      discount: 0,
-      status: 'Paid',
-      items: [
-        { name: 'Basmati Rice 25kg', quantity: 12, unit: 'bag', price: 3200, total: 38400 },
-        { name: 'Wheat Flour 10kg', quantity: 8, unit: 'bag', price: 1450, total: 11600 },
-      ],
-      notes: 'Weekly grain restock.',
-    },
-    {
-      id: 'PINV-1010',
-      supplierId: 'sup-grain',
-      supplierName: 'Al-Madina Grain Traders',
-      date: isoDaysAgo(18),
-      amount: 43000,
-      discount: 0,
-      status: 'Paid',
-      invoiceNumber: 'AMG-2208',
-      items: [
-        { name: 'Ghee 5kg', quantity: 10, unit: 'tin', price: 2850, total: 28500 },
-        { name: 'Wheat Flour 10kg', quantity: 10, unit: 'bag', price: 1450, total: 14500 },
-      ],
-      notes: 'Stocked up before Ramazan demand.',
-    },
-    {
-      id: 'PINV-1002',
-      supplierId: 'sup-dairy',
-      supplierName: 'Sindh Dairy Suppliers',
-      date: isoDaysAgo(3),
-      amount: 21000,
-      discount: 500,
-      status: 'Paid',
-      items: [
-        { name: 'Milk Crate (24x1L)', quantity: 10, unit: 'crate', price: 2000, total: 20000 },
-        { name: 'Cream 200ml', quantity: 25, unit: 'pcs', price: 60, total: 1500 },
-      ],
-      notes: 'Cold-chain delivery received on time.',
-    },
-    {
-      id: 'PINV-1009',
-      supplierId: 'sup-dairy',
-      supplierName: 'Sindh Dairy Suppliers',
-      date: isoDaysAgo(12),
-      amount: 3840,
-      discount: 0,
-      status: 'Paid',
-      items: [{ name: 'Mineral Water 1.5L', quantity: 8, unit: 'crate', price: 480, total: 3840 }],
-      notes: 'Bottled water restock.',
-    },
-    {
-      id: 'PINV-1004',
-      supplierId: 'sup-spice',
-      supplierName: 'Karachi Spice Co.',
-      date: isoDaysAgo(10),
-      amount: 22850,
-      discount: 0,
-      status: 'Paid',
-      invoiceNumber: 'KSC-0091',
-      items: [
-        { name: 'Shan Biryani Masala 50g', quantity: 40, unit: 'pcs', price: 180, total: 7200 },
-        { name: 'Red Chilli Powder 1kg', quantity: 15, unit: 'kg', price: 750, total: 11250 },
-        { name: 'National Garam Masala 200g', quantity: 20, unit: 'pcs', price: 220, total: 4400 },
-      ],
-      notes: 'Monthly spice restock.',
-    },
-    {
-      id: 'PINV-1011',
-      supplierId: 'sup-spice',
-      supplierName: 'Karachi Spice Co.',
-      date: isoDaysAgo(2),
-      amount: 15000,
-      discount: 0,
-      status: 'Draft',
-      items: [{ name: 'Red Chilli Powder 1kg', quantity: 20, unit: 'kg', price: 750, total: 15000 }],
-      notes: 'Awaiting delivery — confirm once received to update stock.',
-    },
-    {
-      id: 'PINV-1003',
-      supplierId: 'sup-general',
-      supplierName: 'City Wholesale Mart',
-      date: isoDaysAgo(1),
-      amount: 15600,
-      discount: 40,
-      status: 'Paid',
-      items: [
-        { name: 'Surf Excel 1kg', quantity: 20, unit: 'bag', price: 650, total: 13000 },
-        { name: 'Sugar 1kg', quantity: 16, unit: 'kg', price: 165, total: 2640 },
-      ],
-      notes: '',
-    },
-    {
-      id: 'PINV-1012',
-      supplierId: 'sup-general',
-      supplierName: 'City Wholesale Mart',
-      date: isoDaysAgo(8),
-      amount: 27800,
-      discount: 0,
-      status: 'Paid',
-      items: [
-        { name: 'Tapal Danedar 475g', quantity: 20, unit: 'pack', price: 700, total: 14000 },
-        { name: 'Cooking Oil 5L', quantity: 6, unit: 'tin', price: 2300, total: 13800 },
-      ],
-      notes: '',
-    },
-    {
-      id: 'PINV-1005',
-      supplierId: 'sup-snacks',
-      supplierName: 'Metro Snacks & Confectionery',
-      date: isoDaysAgo(5),
-      amount: 7400,
-      discount: 0,
-      status: 'Paid',
-      items: [
-        { name: 'Lays Chips Family Pack', quantity: 26, unit: 'pcs', price: 100, total: 2600 },
-        { name: 'Cadbury Dairy Milk', quantity: 30, unit: 'pcs', price: 90, total: 2700 },
-        { name: 'Coca Cola 1.5L', quantity: 15, unit: 'pcs', price: 140, total: 2100 },
-      ],
-      notes: 'Twice-weekly snacks delivery.',
-    },
-    {
-      id: 'PINV-1013',
-      supplierId: 'sup-snacks',
-      supplierName: 'Metro Snacks & Confectionery',
-      date: isoDaysAgo(15),
-      amount: 4675,
-      discount: 0,
-      status: 'Paid',
-      items: [
-        { name: 'Biscuits Assorted', quantity: 25, unit: 'box', price: 115, total: 2875 },
-        { name: 'Cadbury Dairy Milk', quantity: 20, unit: 'pcs', price: 90, total: 1800 },
-      ],
-      notes: '',
-    },
-  ]);
+  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>(() => {
+    const drafts: SupplierInvoice[] = [
+      {
+        id: 'PINV-9001',
+        supplierId: 'sup-spice',
+        supplierName: 'Karachi Spice Co.',
+        date: new Date().toISOString().slice(0, 10),
+        amount: 15000,
+        discount: 0,
+        status: 'Draft',
+        items: [{ name: 'Red Chilli Powder 1kg', quantity: 20, unit: 'kg', price: 750, total: 15000 }],
+        notes: 'Awaiting delivery — confirm once received to update stock.',
+      },
+      {
+        id: 'PINV-9002',
+        supplierId: 'sup-grain',
+        supplierName: 'Al-Madina Grain Traders',
+        date: new Date().toISOString().slice(0, 10),
+        amount: 25000,
+        discount: 0,
+        status: 'Draft',
+        items: [{ name: 'Basmati Rice 25kg', quantity: 8, unit: 'bag', price: 3125, total: 25000 }],
+        notes: 'Awaiting delivery.',
+      }
+    ];
+    return [...SEED_SUPPLIER_INVOICES, ...drafts];
+  });
 
   const [notifications] = useState<Notification[]>([
     {

@@ -8,6 +8,7 @@ import { useState, type ReactNode } from 'react';
 import {
   Send, Copy, Check, ShoppingCart, UserPlus, AlertTriangle, ArrowRight, Package, Users,
   Lightbulb, AlertCircle, Sparkles, ChevronRight, BarChart3, TrendingUp, LineChart, PieChart, Target,
+  Download, FileSpreadsheet,
 } from 'lucide-react';
 import type { AlaraChatMessage, CardData } from '@/lib/alara/types';
 import { VisualizationCard as BetterVisualizationCard } from './VisualizationCard';
@@ -150,10 +151,20 @@ function InvoiceCard({ msg, actions }: CardProps) {
   const confirmed = isConfirmed(d);
   const items = Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : [];
   const total = num(d.total);
+  const details: [string, string][] = [];
+  if (d.subtotal != null) details.push(['Subtotal', `Rs ${num(d.subtotal).toLocaleString()}`]);
+  if (d.discount != null) details.push(['Discount', `Rs ${num(d.discount).toLocaleString()}`]);
+  if (d.tax != null) details.push(['Tax', `Rs ${num(d.tax).toLocaleString()}`]);
+  if (d.deliveryCharges != null) details.push(['Delivery', `Rs ${num(d.deliveryCharges).toLocaleString()}`]);
+  if (d.paidAmount != null) details.push(['Paid', `Rs ${num(d.paidAmount).toLocaleString()}`]);
+  if (d.balance != null) details.push(['Balance', `Rs ${num(d.balance).toLocaleString()}`]);
+  if (d.dueDate) details.push(['Due Date', str(d.dueDate)]);
+  const sourceIds = Array.isArray(d.sourceInvoiceIds) ? (d.sourceInvoiceIds as unknown[]).map(String) : [];
+  if (sourceIds.length) details.push(['Source', sourceIds.join(', ')]);
   return (
     <div className={shell}>
       <div className={header}>
-        <span className={headLabel}>{d.invoice_id ? `Invoice ${str(d.invoice_id)}` : 'Invoice Draft'}</span>
+        <span className={headLabel}>{d.invoice_id ? `Invoice ${str(d.invoice_id)}` : str(d.invoice_label) || 'Invoice Draft'}</span>
         {d.invoice_id ? <span className="font-mono text-[9px] text-success font-bold">Generated</span> : null}
       </div>
       <div className="p-3 space-y-1.5">
@@ -164,6 +175,16 @@ function InvoiceCard({ msg, actions }: CardProps) {
             <span className="tabular-nums">Rs {num(it.total).toLocaleString()}</span>
           </div>
         ))}
+        {details.length > 0 && (
+          <div className="grid grid-cols-2 gap-1.5 pt-2">
+            {details.map(([label, value]) => (
+              <div key={label} className="rounded-md bg-surface-container-low px-2 py-1.5">
+                <p className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">{label}</p>
+                <p className="mt-0.5 truncate text-[10px] font-semibold text-foreground tabular-nums">{value}</p>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex justify-between pt-2 mt-1 border-t border-outline-variant text-sm font-bold text-foreground">
           <span>Total</span><span className="tabular-nums">Rs {total.toLocaleString()}</span>
         </div>
@@ -635,6 +656,85 @@ function NavigateCard({ msg }: CardProps) {
 }
 
 // ── registry ──────────────────────────────────────────────────────────────────
+function CsvExportCard({ msg }: CardProps) {
+  const d = msg.cardData ?? {};
+  const columns = Array.isArray(d.columns) ? (d.columns as string[]) : [];
+  const filters = Array.isArray(d.filters) ? (d.filters as string[]) : [];
+  const previewRows = Array.isArray(d.previewRows) ? (d.previewRows as Record<string, unknown>[]) : [];
+  const csv = str(d.csv);
+  const filename = str(d.filename) || 'supplier-export.csv';
+
+  const download = () => {
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className={shell}>
+      <div className={header}>
+        <span className={headLabel}>
+          <FileSpreadsheet className="inline size-3 mr-1 -mt-0.5" />{str(d.title) || 'CSV Preview'}
+        </span>
+        <span className="font-mono text-[9px] text-muted-foreground">{num(d.count)} records</span>
+      </div>
+      <div className="space-y-2 p-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="rounded-lg border border-outline-variant bg-surface-container-low p-2.5">
+            <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">Columns</p>
+            <p className="mt-1 text-[11px] text-foreground">{columns.join(', ') || 'No columns selected'}</p>
+          </div>
+          <div className="rounded-lg border border-outline-variant bg-surface-container-low p-2.5">
+            <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">Showing</p>
+            <p className="mt-1 text-[11px] text-foreground">{filters.join(', ') || 'none'}</p>
+          </div>
+        </div>
+        <div className="max-h-56 overflow-auto rounded-lg border border-outline-variant">
+          <table className="min-w-full text-left text-[11px]">
+            <thead className="bg-surface-container-low text-muted-foreground">
+              <tr>
+                {columns.slice(0, 6).map((col) => (
+                  <th key={col} className="whitespace-nowrap px-2 py-1.5 font-mono text-[9px] uppercase tracking-widest">
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline-variant/70">
+              {previewRows.map((row, i) => (
+                <tr key={i}>
+                  {columns.slice(0, 6).map((col) => (
+                    <td key={col} className="max-w-40 truncate px-2 py-1.5 text-foreground">
+                      {str(row[col])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {previewRows.length === 0 && (
+                <tr>
+                  <td className="px-2 py-3 text-muted-foreground" colSpan={Math.max(1, columns.slice(0, 6).length)}>
+                    Preview ke liye koi row nahi.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className={footer}>
+        <button onClick={download} disabled={!csv || columns.length === 0} className={confirmBtn}>
+          <Download className="size-3.5" />
+          Download CSV
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const CARDS: Record<string, (p: CardProps) => ReactNode> = {
   metric: MetricCard,
   list: ListCard,
@@ -645,6 +745,7 @@ const CARDS: Record<string, (p: CardProps) => ReactNode> = {
   disambiguation: DisambiguationCard,
   next_steps: NextStepsCard,
   insight: InsightCard,
+  csv_export: CsvExportCard,
   visualization: BetterVisualizationCard,
   navigate: NavigateCard,
 };

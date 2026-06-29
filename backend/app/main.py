@@ -83,12 +83,19 @@ def w_query(inp: QueryIn) -> WorkflowResult:
 def chat(inp: ChatIn) -> ChatOut:
     # Resolve names against the frontend's live roster (source of truth).
     store.sync_customers([c.model_dump() for c in inp.context.customers])
+    # Sync supplier invoices so supplier_purchase_trend uses real data.
+    store.sync_supplier_invoices([si.model_dump() for si in inp.context.supplier_invoices])
     return llm.handle_chat(inp)
 
 
 # ── Agentic planner (stateless) — picks tools, frontend executes them ─────────
 @app.post("/api/plan", response_model=PlanOut)
 def plan(inp: PlanIn) -> PlanOut:
+    # Sync customer roster + supplier invoices for visualization queries.
+    if inp.context.customers:
+        store.sync_customers([c.model_dump() for c in inp.context.customers])
+    if inp.context.supplier_invoices:
+        store.sync_supplier_invoices([si.model_dump() for si in inp.context.supplier_invoices])
     return llm.plan(inp)
 
 

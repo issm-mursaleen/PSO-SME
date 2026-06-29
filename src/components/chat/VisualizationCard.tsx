@@ -4,12 +4,13 @@ import {
   BarChart3, Lightbulb, AlertCircle, Sparkles, ChevronRight, LineChart, PieChart, Target, TrendingUp,
 } from 'lucide-react';
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
-  Line,
-  LineChart as ReLineChart,
+  LabelList,
   Pie,
   PieChart as RePieChart,
   ResponsiveContainer,
@@ -20,7 +21,17 @@ import {
 import type { AlaraChatMessage } from '@/lib/alara/types';
 
 type Step = { label: string; prompt: string; reason?: string; tone?: string };
-type VisualPoint = { label: string; value: number; target?: number; meta?: string; tone?: string };
+type VisualPoint = {
+  label: string;
+  value: number;
+  target?: number;
+  meta?: string;
+  tone?: string;
+  rank?: number;
+  invoiceCount?: number;
+  period?: string;
+  customerId?: string;
+};
 
 interface VisualizationCardProps {
   msg: AlaraChatMessage;
@@ -28,6 +39,7 @@ interface VisualizationCardProps {
 }
 
 const str = (v: unknown) => String(v ?? '');
+const pkr = (v: number) => `PKR ${Math.round(v).toLocaleString()}`;
 
 const CHART_COLORS = ['#1a1a18', '#4caf79', '#f59e0b', '#3b82f6', '#ef4444', '#787776'];
 const GRID = '#ededea';
@@ -36,6 +48,7 @@ const AXIS = { stroke: '#a8a7a4', fontSize: 10, tickLine: false, axisLine: false
 const CHART_META: Record<string, { icon: typeof BarChart3; label: string }> = {
   kpi: { icon: BarChart3, label: 'Live data' },
   bar: { icon: BarChart3, label: 'Ranked view' },
+  area: { icon: LineChart, label: 'Trend view' },
   line: { icon: LineChart, label: 'Trend view' },
   donut: { icon: PieChart, label: 'Split view' },
   progress: { icon: Target, label: 'Target view' },
@@ -67,10 +80,16 @@ function ChartTooltip({
   const point = row.payload;
   return (
     <div className="rounded-lg border border-outline-variant bg-card px-2.5 py-2 text-[11px] shadow-md">
-      <p className="font-semibold text-foreground">{label ?? point?.label}</p>
+      <p className="font-semibold text-foreground">
+        {point?.rank ? `#${point.rank} ` : ''}{label ?? point?.label}
+      </p>
       <p className="mt-0.5 font-mono text-muted-foreground tabular-nums">
         {point?.meta ?? Number(row.value ?? 0).toLocaleString()}
       </p>
+      {typeof point?.invoiceCount === 'number' && !point?.meta && (
+        <p className="mt-0.5 font-mono text-muted-foreground tabular-nums">{point.invoiceCount} invoices</p>
+      )}
+      {point?.period && <p className="mt-0.5 text-[10px] text-muted-foreground">{point.period}</p>}
     </div>
   );
 }
@@ -99,17 +118,33 @@ function EmptyChart() {
   );
 }
 
-function BarPoints({ points }: { points: VisualPoint[] }) {
+function BarPoints({ points, onPrompt }: { points: VisualPoint[]; onPrompt: (p: string) => void }) {
   const data = points.map((p) => ({ ...p, fill: toneColor(p.tone) }));
+  const clickable = data.some((p) => p.customerId);
   return (
     <div className="h-64 border-t border-outline-variant bg-card p-3">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 56, bottom: 4, left: 8 }}>
           <CartesianGrid stroke={GRID} horizontal={false} />
           <XAxis type="number" {...AXIS} tickFormatter={(v) => compactNumber(Number(v))} />
-          <YAxis type="category" dataKey="label" {...AXIS} width={98} tick={{ ...AXIS, width: 92 }} />
+          <YAxis type="category" dataKey="label" {...AXIS} width={98} />
           <Tooltip content={<ChartTooltip />} cursor={{ fill: '#f0efeb' }} />
-          <Bar dataKey="value" radius={[0, 5, 5, 0]} barSize={14}>
+          <Bar
+            dataKey="value"
+            radius={[0, 5, 5, 0]}
+            barSize={14}
+            style={clickable ? { cursor: 'pointer' } : undefined}
+            onClick={(entry) => {
+              const point = entry as unknown as VisualPoint;
+              if (point?.customerId) onPrompt(`${point.label} ka page kholo`);
+            }}
+          >
+            <LabelList
+              dataKey="value"
+              position="right"
+              formatter={(v: unknown) => pkr(Number(v))}
+              style={{ fontSize: 10, fontFamily: 'monospace', fill: '#1a1a18' }}
+            />
             {data.map((p, i) => (
               <Cell key={`${p.label}-${i}`} fill={p.fill} />
             ))}
@@ -124,20 +159,20 @@ function LinePoints({ points }: { points: VisualPoint[] }) {
   return (
     <div className="h-64 border-t border-outline-variant bg-card p-3">
       <ResponsiveContainer width="100%" height="100%">
-        <ReLineChart data={points} margin={{ top: 8, right: 12, bottom: 4, left: -8 }}>
+        <AreaChart data={points} margin={{ top: 8, right: 12, bottom: 4, left: -8 }}>
           <CartesianGrid stroke={GRID} vertical={false} />
           <XAxis dataKey="label" {...AXIS} interval="preserveStartEnd" />
           <YAxis {...AXIS} tickFormatter={(v) => compactNumber(Number(v))} />
           <Tooltip content={<ChartTooltip />} />
-          <Line
+          <Area
             type="monotone"
             dataKey="value"
             stroke="#1a1a18"
             strokeWidth={2.5}
+            fill="#ededea"
             dot={{ r: 3, fill: '#ffffff', stroke: '#1a1a18', strokeWidth: 2 }}
-            activeDot={{ r: 5, fill: '#1a1a18', stroke: '#ffffff', strokeWidth: 2 }}
           />
-        </ReLineChart>
+        </AreaChart>
       </ResponsiveContainer>
     </div>
   );
@@ -151,16 +186,7 @@ function DonutPoints({ points }: { points: VisualPoint[] }) {
       <div className="relative h-52 min-w-0">
         <ResponsiveContainer width="100%" height="100%">
           <RePieChart>
-            <Pie
-              data={points}
-              dataKey="value"
-              nameKey="label"
-              innerRadius={58}
-              outerRadius={82}
-              paddingAngle={2}
-              stroke="#ffffff"
-              strokeWidth={2}
-            >
+            <Pie data={points} dataKey="value" nameKey="label" innerRadius={58} outerRadius={82} paddingAngle={2} stroke="#ffffff" strokeWidth={2}>
               {points.map((_, i) => (
                 <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
               ))}
@@ -248,13 +274,21 @@ function StepButton({ s, onPrompt }: { s: Step; onPrompt: (p: string) => void })
   );
 }
 
-function ChartBody({ chartType, points }: { chartType: string; points: VisualPoint[] }) {
+function ChartBody({
+  chartType,
+  points,
+  onPrompt,
+}: {
+  chartType: string;
+  points: VisualPoint[];
+  onPrompt: (p: string) => void;
+}) {
   if (chartType === 'kpi') return null;
   if (!points.length) return <EmptyChart />;
-  if (chartType === 'line') return <LinePoints points={points} />;
+  if (chartType === 'line' || chartType === 'area') return <LinePoints points={points} />;
   if (chartType === 'donut') return <DonutPoints points={points} />;
   if (chartType === 'progress') return <ProgressPoints points={points} />;
-  return <BarPoints points={points} />;
+  return <BarPoints points={points} onPrompt={onPrompt} />;
 }
 
 export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
@@ -276,7 +310,7 @@ export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
           <span className="font-mono text-[10px] font-bold uppercase text-foreground">
             <HeaderIcon className="inline size-3 mr-1 -mt-0.5 text-primary" />{str(d.title) || 'Visualization'}
           </span>
-          {points.length > 0 && <p className="mt-0.5 text-[10px] text-muted-foreground">{points.length} data points</p>}
+          {str(d.subtitle) && <p className="mt-0.5 text-[10px] text-muted-foreground">{str(d.subtitle)}</p>}
         </div>
         <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-outline-variant bg-muted px-2 py-1 font-mono text-[9px] font-bold uppercase text-foreground">
           <TrendingUp className="size-3" /> {meta.label}
@@ -284,7 +318,7 @@ export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
       </div>
 
       <StatStrip stats={stats} chartType={chartType} />
-      <ChartBody chartType={chartType} points={points} />
+      <ChartBody chartType={chartType} points={points} onPrompt={actions.onPrompt} />
 
       {explanation.length > 0 && (
         <div className="border-t border-outline-variant bg-surface-container-lowest p-3">
