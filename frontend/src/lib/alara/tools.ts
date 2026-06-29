@@ -1549,24 +1549,31 @@ interface CustomerRanking {
 
 /** Customers ranked by sales WITHIN a date range (never "lifetime") — shared by
  *  the top_customers visualization and its CSV export so both agree exactly. */
+/** range=null ranks over ALL invoices (scope='lifetime'); a range ranks only
+ *  within it (scope='selected_period'). Sorts by revenue or invoice_count —
+ *  never a hardcoded slice, always exactly `limit` (fewer if fewer exist). */
 function rankCustomersBySales(
   ctx: AlaraToolContext,
-  range: { start: Date; end: Date },
+  range: { start: Date; end: Date } | null,
   limit: number,
+  rankingMetric: 'revenue' | 'invoice_count' = 'revenue',
 ): CustomerRanking[] {
   const totals = new Map<string, { value: number; count: number }>();
   for (const inv of ctx.invoices) {
-    const date = parseDateOnly(inv.date);
-    if (!date || date.getTime() < range.start.getTime() || date.getTime() > range.end.getTime()) continue;
+    if (range) {
+      const date = parseDateOnly(inv.date);
+      if (!date || date.getTime() < range.start.getTime() || date.getTime() > range.end.getTime()) continue;
+    }
     const current = totals.get(inv.customerId) ?? { value: 0, count: 0 };
     current.value += inv.amount;
     current.count += 1;
     totals.set(inv.customerId, current);
   }
+  const metricKey: 'value' | 'count' = rankingMetric === 'invoice_count' ? 'count' : 'value';
   return ctx.customers
     .map((c) => ({ c, value: totals.get(c.id)?.value ?? 0, count: totals.get(c.id)?.count ?? 0 }))
-    .filter((r) => r.value > 0)
-    .sort((a, b) => b.value - a.value)
+    .filter((r) => r.value > 0 || r.count > 0)
+    .sort((a, b) => b[metricKey] - a[metricKey])
     .slice(0, limit);
 }
 
@@ -1637,8 +1644,13 @@ const showVisualization: AlaraTool = {
     'Change over time → line. Percentage split of a whole → donut. Progress toward a target → progress. ' +
     "If chartType is omitted, each kind renders with its natural default (sales_trend→line, top_customers/product_mix/inventory_risk→bar, " +
     'customer_type_split→donut, reorder_progress→progress) — only override chartType when the user explicitly asks for a different chart style. ' +
-    'top_customers ALWAYS respects both the requested date range (period_value/period_unit or date_from/date_to — defaults to last 30 days) ' +
-    'and the requested top-N (limit, e.g. "top 3 customers" → limit=3) — it ranks by sales WITHIN that range, never lifetime sales.',
+    'top_customers is the ONLY supported way to rank/list multiple customers by performance — prefer it over the legacy query_data tool ' +
+    'whenever the request mentions rank/ranking/top-N/best-N/highest/list/compare/chart/report/visualization, or a plural "customers" ' +
+    'mention with any business/sales/revenue wording (e.g. "customers based on business"). It ALWAYS respects the requested top-N ' +
+    '(limit, e.g. "top 3 customers"/"top3" → limit=3; a bare singular "best customer" with no number → limit=1) and the requested ' +
+    'scope: omit scope/period args to rank over ALL recorded invoices ("lifetime", the default), or give a date range to rank ' +
+    "only within it (scope='selected_period'). Use ranking_metric='invoice_count' only when the user explicitly asks by number " +
+    "of invoices/transactions, otherwise ranking_metric='revenue'.",
   parameters: {
     type: 'object',
     properties: {
@@ -1660,6 +1672,20 @@ const showVisualization: AlaraTool = {
       date_to: { type: 'string', description: 'Explicit end date in YYYY-MM-DD format.' },
       group_by: { type: 'string', enum: ['day', 'week', 'month', 'year', 'auto'], description: 'Grouping for trend charts. Use auto unless the user asks.' },
       limit: { type: 'integer', minimum: 1, description: 'Number of bars/rows to show, e.g. "top 3 customers" → 3. Default 5, clamped to 1–20.' },
+      scope: {
+        type: 'string',
+        enum: ['lifetime', 'selected_period'],
+        description:
+          'top_customers only: "lifetime" ranks over every recorded invoice (default when no date range is given). ' +
+          '"selected_period" ranks only within the resolved date range (use when one is given).',
+      },
+      ranking_metric: {
+        type: 'string',
+        enum: ['revenue', 'invoice_count'],
+        description:
+          'top_customers only: "revenue" (default) ranks by total sales value. "invoice_count" ranks by number of ' +
+          'invoices/transactions — only use when the user explicitly asks by invoice count or transaction count.',
+      },
     },
     required: ['kind'],
   },
@@ -1758,19 +1784,24 @@ const showVisualization: AlaraTool = {
     }
 
     if (kind === 'top_customers') {
-      const range = resolveVisualizationRange(args);
-      const ranked = rankCustomersBySales(ctx, range, limit);
+      const hasPeriodArgs =
+        args.period_value != null || args.period_unit != null || args.date_from != null || args.date_to != null || args.preset != null;
+      const scope = String(args.scope ?? (hasPeriodArgs ? 'selected_period' : 'lifetime')) === 'selected_period' ? 'selected_period' : 'lifetime';
+      const rankingMetric = String(args.ranking_metric ?? 'revenue') === 'invoice_count' ? 'invoice_count' : 'revenue';
+      const isLifetime = scope === 'lifetime';
+      const range = isLifetime ? null : resolveVisualizationRange(args);
+      const ranked = rankCustomersBySales(ctx, range, limit, rankingMetric);
       const shownTotal = ranked.reduce((s, r) => s + r.value, 0);
       const shownInvoiceCount = ranked.reduce((s, r) => s + r.count, 0);
       const leader = ranked[0];
       const second = ranked[1];
-      const rangeLabel = formatRange(range.start, range.end);
+      const scopeLabel = isLifetime ? 'All recorded sales' : formatRange(range!.start, range!.end);
 
       const explanation: string[] = [];
       const facts: { type: string; label: string; formatted_value: string }[] = [];
       if (leader) {
         const share = shownTotal > 0 ? Math.round((leader.value / shownTotal) * 100) : 0;
-        explanation.push(`${leader.c.name} ne ${rangeLabel} mein ${pkr(leader.value)} ka business diya — displayed sales ka ${share}%.`);
+        explanation.push(`${leader.c.name} ne ${isLifetime ? 'lifetime' : scopeLabel + ' mein'} ${pkr(leader.value)} ka business diya — displayed sales ka ${share}%.`);
         facts.push({ type: 'leader', label: 'Top customer', formatted_value: pkr(leader.value) });
         facts.push({ type: 'share', label: `Top ${ranked.length} sales share`, formatted_value: `${share}%` });
         if (second && second.value > 0) {
@@ -1778,26 +1809,31 @@ const showVisualization: AlaraTool = {
           explanation.push(`${leader.c.name} ${second.c.name} se ${lead}% aage hai.`);
           facts.push({ type: 'lead_over_second', label: 'Lead over #2', formatted_value: `${lead}%` });
         } else {
-          explanation.push(`Is range mein sirf ${leader.c.name} ki recorded sales hain.`);
+          explanation.push(`Is scope mein sirf ${leader.c.name} ki recorded sales hain.`);
         }
       } else {
-        explanation.push(`${rangeLabel} mein koi customer sale record nahi mili.`);
+        explanation.push(`${isLifetime ? 'Abhi tak' : scopeLabel + ' mein'} koi customer sale record nahi mili.`);
       }
 
       return {
         ok: true,
         text: leader
-          ? `Top ${ranked.length} customers (${rangeLabel}) — combined ${pkr(shownTotal)} across ${shownInvoiceCount} invoices.`
-          : `${rangeLabel} mein koi customer sales nahi mili.`,
+          ? `Top ${ranked.length} customers (${scopeLabel}) — combined ${pkr(shownTotal)} across ${shownInvoiceCount} invoices.`
+          : `${scopeLabel} mein koi customer sales nahi mili.`,
         cardType: 'visualization',
         cardData: {
           kind,
-          title: `Top ${ranked.length || limit} customers by sales`,
-          subtitle: rangeLabel,
+          title: `Top ${ranked.length || limit} customers by ${isLifetime ? 'lifetime' : 'selected period'} sales`,
+          subtitle: scopeLabel,
+          scope,
+          ranking_metric: rankingMetric,
+          requested_limit: limit,
+          customers_shown: ranked.length,
           chartType: chartTypeOverride ?? 'bar',
           stats: [
             { label: 'Customers Shown', value: ranked.length },
             { label: 'Combined Sales', value: pkr(shownTotal) },
+            { label: 'Combined Invoices', value: shownInvoiceCount },
             { label: 'Top Customer', value: leader?.c.name ?? '—' },
           ],
           points: ranked.map((r, i) => ({
@@ -1807,29 +1843,32 @@ const showVisualization: AlaraTool = {
             tone: r.c.lastVisitDays >= 14 ? 'urgent' : 'opportunity',
             rank: i + 1,
             invoiceCount: r.count,
-            period: rangeLabel,
+            lastVisitDays: r.c.lastVisitDays,
+            period: scopeLabel,
             customerId: r.c.id,
           })),
           explanation,
           insights: leader
             ? {
-              headline: `${leader.c.name} ${rangeLabel} ki top customer rahi.`,
+              headline: `${leader.c.name} ${isLifetime ? 'lifetime ki' : scopeLabel + ' ki'} top customer rahi.`,
               facts,
               recommendedAction: { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo` },
             }
             : undefined,
           steps: leader
             ? [
-              { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
-              { label: 'Inhi customers ke invoices dekho', prompt: 'Invoices kholo', reason: 'Displayed customers ki billing detail', tone: 'normal' },
+              { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo`, reason: 'Top customer ka pura profile dekhein', tone: 'normal' },
+              { label: 'Inhi customers ke invoices dekho', prompt: 'Invoices kholo', reason: 'Ranked customers ki billing detail', tone: 'normal' },
               { label: 'Ranking CSV mein export karo', prompt: `Top ${ranked.length} customers ki ranking CSV mein do`, reason: 'Sheet mein share/save karein', tone: 'normal' },
             ]
-            : [{ label: 'Record sale', prompt: 'Record sale page kholo', reason: 'Ranking banane ke liye is range mein sales chahiye', tone: 'normal' }],
+            : [{ label: 'Record sale', prompt: 'Record sale page kholo', reason: 'Ranking banane ke liye koi sale record nahi hai', tone: 'normal' }],
         },
         data: {
           kind,
-          date_from: isoDate(range.start),
-          date_to: isoDate(range.end),
+          scope,
+          ranking_metric: rankingMetric,
+          date_from: range ? isoDate(range.start) : null,
+          date_to: range ? isoDate(range.end) : null,
           limit,
           customer_ids: ranked.map((r) => r.c.id),
         },

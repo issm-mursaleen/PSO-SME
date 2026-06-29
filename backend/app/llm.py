@@ -185,8 +185,29 @@ def _plan_with_llm(payload: PlanIn) -> PlanOut:
             ToolCallOut(name=c.function.name, args=json.loads(c.function.arguments or "{}"))
             for c in choice.tool_calls
         ]
+        for c in calls:
+            _log_tool_call(c.name, c.args)
         return PlanOut(tool_calls=calls, source="llm")
     return PlanOut(tool_calls=[], final_text=choice.content or "Ji, batayein main kaise madad karun?", source="llm")
+
+
+# TEMP DEBUG LOGGING — verifying the customer-ranking routing fix; remove
+# once confirmed query_data(top_by_sales) no longer fires for ranking/top-N
+# customer requests.
+def _log_tool_call(name: str, args: dict[str, Any]) -> None:
+    if name not in ("show_visualization", "query_data"):
+        return
+    kind = args.get("kind")
+    renderer = (
+        ("TopCustomersVisualization" if kind == "top_customers" else "VisualizationCard")
+        if name == "show_visualization"
+        else "MostBusinessCard(legacy)"
+    )
+    print(
+        f"[alara:plan] tool={name} kind={kind} limit={args.get('limit')} "
+        f"scope={args.get('scope')} ranking_metric={args.get('ranking_metric')} "
+        f"template={args.get('template')} renderer={renderer}"
+    )
 
 
 # ── Offline fallback planner (no API key) — mirrors the frontend localPlan ────
@@ -239,6 +260,71 @@ def _parse_period(low: str) -> dict[str, Any]:
     return {"period_value": value, "period_unit": unit, "group_by": "auto"}
 
 
+# ── Customer-ranking routing (high priority — see PLAN_SYSTEM_PROMPT's
+# "CUSTOMER RANKING" section). show_visualization(kind='top_customers') is the
+# single source of truth for ranking multiple customers; query_data's
+# top_by_sales template is legacy, reserved only for a bare singular question
+# with no ranking/graph/list/report/top-N wording. ──────────────────────────
+def _parse_top_limit(text: str, default: int = 5) -> int:
+    match = re.search(
+        r"\b(?:top|best)\s*(\d+)\b|"
+        r"\brank(?:ed|ing)?\s+(?:my\s+)?(?:top\s*)?(\d+)\b",
+        text,
+        re.I,
+    )
+    if not match:
+        return default
+
+    value = next(
+        int(group)
+        for group in match.groups()
+        if group is not None
+    )
+    return max(1, min(value, 20))
+
+
+def _is_customer_ranking_request(text: str) -> bool:
+    """A plural "customers" mention reaching this point in the cascade (every
+    more-specific earlier intent already ruled out) is treated as ranking —
+    matches phrasing like "customers based on business" that carries no
+    explicit rank/top-N word. A bare SINGULAR "customer" mention only counts
+    when paired with an explicit number, a rank word, or an action word
+    (chart/list/report/...) — so "mera best customer kaun hai?" stays a plain
+    question routed to the legacy query_data tool, while "best customer ka
+    chart dikhao" routes to show_visualization with limit=1."""
+    has_plural_customer = bool(re.search(r"\b(customers|grahak\w*|clients)\b", text, re.I))
+    has_singular_customer = bool(re.search(r"\bcustomer\b", text, re.I)) and not has_plural_customer
+    if not (has_plural_customer or has_singular_customer):
+        return False
+
+    has_explicit_trigger = bool(
+        re.search(
+            r"\b(rank|ranking|ranked|highest|sab\s*se\s*zyada|sabse\s*zyada)\b|"
+            r"\b(top|best)\s*\d+\b|"
+            r"(chart|graph|visual|dikhao|report|\blist\b|compare|comparison)",
+            text,
+            re.I,
+        )
+    )
+    return True if has_plural_customer else has_explicit_trigger
+
+
+def _customer_ranking_args(low: str, period_args: dict[str, Any]) -> dict[str, Any]:
+    has_plural_customer = bool(re.search(r"\b(customers|grahak\w*|clients)\b", low, re.I))
+    return {
+        "kind": "top_customers",
+        "chartType": "bar",
+        "limit": _parse_top_limit(low, default=5 if has_plural_customer else 1),
+        "ranking_metric": (
+            "invoice_count"
+            if re.search(r"(invoice count|transactions?|number of invoices)", low)
+            else "revenue"
+        ),
+        "scope": "selected_period" if period_args else "lifetime",
+        **period_args,
+    }
+
+
 def _plan_fallback(message: str) -> PlanOut:
     text = message.strip()
     low = text.lower()
@@ -246,6 +332,7 @@ def _plan_fallback(message: str) -> PlanOut:
     period_args = _parse_period(low)
 
     def call(name: str, args: dict[str, Any]) -> PlanOut:
+        _log_tool_call(name, args)
         return PlanOut(tool_calls=[ToolCallOut(name=name, args=args)], source="fallback")
 
     if re.search(r"\b(liya|le liya|saman|kharid|bika|sale|becha)\b", low) and amt:
@@ -333,6 +420,11 @@ def _plan_fallback(message: str) -> PlanOut:
         if supplier:
             return call("get_supplier", {"supplier": supplier})
         return call("list_suppliers", {})
+
+    # High-priority customer-ranking intent — checked before generic
+    # time-period analytics, generic visualization, and query_data.
+    if _is_customer_ranking_request(low):
+        return call("show_visualization", _customer_ranking_args(low, period_args))
 
     has_time_period = bool(period_args)
     has_analytics_subject = bool(re.search(r"(sale|sales|revenue|purchase|purchases|customer|inventory|stock)", low))
@@ -512,6 +604,7 @@ def _handle_with_llm(payload: ChatIn) -> ChatOut:
 
 # ── Deterministic dispatch (shared by LLM + fallback) ───────────────────────
 def _run(name: str, args: dict[str, Any], source: str) -> ChatOut:
+    _log_tool_call(name, args)
     if name == "record_sale":
         return _preview_record_sale(args, source)
     if name == "add_customer":
@@ -634,6 +727,12 @@ def _handle_fallback(message: str) -> ChatOut:
     # W4 — queries
     if ("aaj" in low and "sale" in low) or "sales today" in low:
         return _run("query_data", {"template": "sales_today"}, "fallback")
+
+    # High-priority customer-ranking intent — must win over the legacy
+    # query_data top_by_sales template (see PLAN_SYSTEM_PROMPT's "CUSTOMER
+    # RANKING" section / _plan_fallback's equivalent check).
+    if _is_customer_ranking_request(low):
+        return _run("show_visualization", _customer_ranking_args(low, period_args), "fallback")
     if "sab se zyada" in low or "most business" in low or "best customer" in low:
         return _run("query_data", {"template": "top_by_sales"}, "fallback")
 

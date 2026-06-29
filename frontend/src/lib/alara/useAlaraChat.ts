@@ -210,6 +210,25 @@ export function useAlaraChat() {
 
     for (const call of plan.tool_calls) {
       const outcome = runToolCall(call as ToolCall, ctxRef.current);
+      // TEMP DEBUG LOGGING — verifying the customer-ranking routing fix;
+      // remove once confirmed query_data(top_by_sales) no longer fires for
+      // ranking/top-N customer requests.
+      if (call.name === 'show_visualization' || call.name === 'query_data') {
+        console.log('[alara:plan]', {
+          tool: call.name,
+          kind: (call as ToolCall).args.kind,
+          limit: (call as ToolCall).args.limit,
+          scope: (call as ToolCall).args.scope,
+          ranking_metric: (call as ToolCall).args.ranking_metric,
+          template: (call as ToolCall).args.template,
+          renderer:
+            call.name === 'show_visualization'
+              ? (call as ToolCall).args.kind === 'top_customers'
+                ? 'TopCustomersVisualization'
+                : 'VisualizationCard'
+              : 'MostBusinessCard(legacy)',
+        });
+      }
       if (call.name === 'show_visualization') {
         const kind = String((call as ToolCall).args.kind ?? outcome.cardData?.kind ?? 'sales_trend');
         vizBuffer.push({ kind, outcome });
@@ -624,15 +643,25 @@ function localPlan(message: string): PlanResponse {
   // returns ONE show_visualization call per requested view, in the user's
   // order, sharing the same date range — instead of collapsing into one
   // generic chart. A single matched kind behaves exactly as before (one call).
-  const topLimitMatch = low.match(/(?:top|best)\s*(\d+)/);
-  // Require an explicit "top N" / plural "customers" / "customer ranking"
-  // wording — not a bare "best customer kaun hai", which stays routed to
-  // query_data's insight card (checked further down).
-  const isTopCustomersKind =
-    /(customer|grahak|client)/.test(low) &&
-    (Boolean(topLimitMatch) ||
-      /(top|best)\s*\d*\s*(customers|grahako|clients)\b/.test(low) ||
-      /(customer|customers)\s+ranking/.test(low));
+  // Customer-ranking detection — HIGH PRIORITY: must win over the legacy
+  // query_data top_by_sales template (further down) for anything beyond a
+  // bare singular question. A plural "customers" mention reaching this point
+  // (every more-specific earlier intent already ruled out) is treated as a
+  // ranking request even with no explicit rank/top-N word — matches phrasing
+  // like "customers based on business". A bare SINGULAR "customer" mention
+  // only counts when paired with an explicit number, a rank word, or an
+  // action word (chart/list/report/...) — so "mera best customer kaun hai?"
+  // stays a plain question (→ query_data), while "best customer ka chart
+  // dikhao" routes here with limit=1.
+  const topLimitMatch =
+    low.match(/\b(?:top|best)\s*(\d+)\b/) || low.match(/\brank(?:ed|ing)?\s+(?:my\s+)?(?:top\s*)?(\d+)\b/);
+  const mentionsCustomerPlural = /\b(customers|grahak\w*|clients)\b/.test(low);
+  const mentionsCustomerSingular = /\bcustomer\b/.test(low) && !mentionsCustomerPlural;
+  const hasExplicitRankingTrigger =
+    Boolean(topLimitMatch) ||
+    /(rank|ranking|ranked|highest|sab\s*se\s*zyada|sabse\s*zyada)/.test(low) ||
+    /(chart|graph|visual|dikhao|report|\blist\b|compare|comparison)/.test(low);
+  const isTopCustomersKind = mentionsCustomerPlural || (mentionsCustomerSingular && hasExplicitRankingTrigger);
 
   const kindMatches: { kind: string; index: number }[] = [];
   const pushMatch = (kind: string, regex: RegExp) => {
@@ -645,7 +674,7 @@ function localPlan(message: string): PlanResponse {
   pushMatch('product_mix', /(product mix|item mix)/);
   pushMatch('supplier_purchase_trend', /(supplier purchase|supplier purchases)/);
   if (isTopCustomersKind) {
-    const idx = low.search(/top|best|ranking/);
+    const idx = low.search(/top|best|rank|highest|customer/);
     kindMatches.push({ kind: 'top_customers', index: idx >= 0 ? idx : 0 });
   }
   pushMatch('sales_trend', /(sales\s*trend|\bsales\b|\bsale\b)/);
@@ -659,7 +688,14 @@ function localPlan(message: string): PlanResponse {
       const args: Record<string, unknown> = { kind, ...periodArgs };
       if (kind === 'top_customers') {
         args.chartType = 'bar';
-        if (topLimitMatch) args.limit = Number(topLimitMatch[1]);
+        // Explicit number wins; a bare singular "customer" mention implies
+        // exactly one; otherwise omit it and let the tool default to 5.
+        const limitValue = topLimitMatch ? Number(topLimitMatch[1]) : mentionsCustomerSingular ? 1 : undefined;
+        if (limitValue != null) args.limit = limitValue;
+        args.ranking_metric = /(invoice count|invoice_count|transactions?|number of invoices)/.test(low)
+          ? 'invoice_count'
+          : 'revenue';
+        args.scope = Object.keys(periodArgs).length > 0 ? 'selected_period' : 'lifetime';
       } else if ((kind === 'sales_trend' || kind === 'supplier_purchase_trend') && /(compare|comparison)/.test(low)) {
         args.chartType = 'bar';
       }
@@ -676,7 +712,9 @@ function localPlan(message: string): PlanResponse {
     const c = nameBefore('ke|ka|ki|ko|for');
     return fb([{ name: 'suggest_next_steps', args: c ? { customer: c } : {} }]);
   }
-  // "Most business / best customer" = lifetime sales.
+  // LEGACY — only reachable for a bare singular question with no ranking/
+  // graph/list/report/top-N wording (the scanner above already intercepted
+  // every plural "customers" mention and every triggered singular one).
   if (/(sab se zyada|sabse zyada|most|best|top).*(business|sale|customer|grahak)|business.*(zyada|most)/.test(low))
     return fb([{ name: 'query_data', args: { template: 'top_by_sales' } }]);
   // Single-customer analysis: "X ka business / X kaisa customer / X ki performance".

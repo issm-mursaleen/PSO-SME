@@ -415,29 +415,59 @@ def _viz_supplier_purchases(inp: VisualizationIn, start: date, end: date, group_
 
 
 def _viz_top_customers(inp: VisualizationIn, start: date, end: date, group_by: str) -> WorkflowResult:
-    """Top customers by sales amount within the requested date range."""
-    rows = filter_invoices_by_date(start, end)
+    """Top customers ranked by revenue or invoice count — lifetime (every
+    recorded invoice) by default, or just the resolved date range when
+    scope='selected_period'. Always returns exactly inp.limit customers
+    (fewer only if fewer eligible customers exist) — never a hardcoded slice."""
+    rows = store.invoices if inp.scope == "lifetime" else filter_invoices_by_date(start, end)
+    customers_by_id = {c["id"]: c for c in store.customers}
+
     tally: dict[str, dict] = {}
     for inv in rows:
         cid = inv["customerId"]
         if cid not in tally:
-            tally[cid] = {"id": cid, "name": inv["customerName"], "total": 0.0, "invoices": 0}
-        tally[cid]["total"] += float(inv["amount"])
-        tally[cid]["invoices"] += 1
-    ranked = sorted(tally.values(), key=lambda x: x["total"], reverse=True)[: inp.limit]
+            tally[cid] = {"id": cid, "name": inv["customerName"], "revenue": 0.0, "invoice_count": 0}
+        tally[cid]["revenue"] += float(inv["amount"])
+        tally[cid]["invoice_count"] += 1
+
+    metric_key = "invoice_count" if inp.ranking_metric == "invoice_count" else "revenue"
+    ranked = sorted(tally.values(), key=lambda row: row[metric_key], reverse=True)[: inp.limit]
+
+    shown_total = sum(r["revenue"] for r in ranked)
+    shown_invoices = sum(r["invoice_count"] for r in ranked)
+    is_lifetime = inp.scope == "lifetime"
+    scope_label = "All recorded sales" if is_lifetime else f"{start.strftime('%d %b %Y')} - {end.strftime('%d %b %Y')}"
+    title = f"Top {len(ranked)} customers by {'lifetime' if is_lifetime else 'selected period'} sales"
+
     return WorkflowResult(
         ok=True,
         workflow="show_visualization",
-        confirm=f"{start.strftime('%d %b %Y')} se {end.strftime('%d %b %Y')} tak top {len(ranked)} customers.",
+        confirm=f"Top {len(ranked)} customers ({scope_label}) — combined PKR {round(shown_total):,} across {shown_invoices} invoices.",
         data={
             "kind": inp.kind,
             "chartType": inp.chartType or "bar",
-            "date_from": start.isoformat(),
-            "date_to": end.isoformat(),
+            "scope": inp.scope,
+            "ranking_metric": inp.ranking_metric,
+            "requested_limit": inp.limit,
+            "customers_shown": len(ranked),
+            "title": title,
+            "subtitle": scope_label,
+            "date_from": None if is_lifetime else start.isoformat(),
+            "date_to": None if is_lifetime else end.isoformat(),
             "group_by": group_by,
-            "total": sum(r["total"] for r in ranked),
+            "total": shown_total,
             "record_count": len(ranked),
-            "series": [{"period": r["name"], "sales": round(r["total"], 2), "invoices": r["invoices"]} for r in ranked],
+            "series": [
+                {
+                    "customer_id": r["id"],
+                    "customer_name": r["name"],
+                    "revenue": round(r["revenue"], 2),
+                    "invoice_count": r["invoice_count"],
+                    "last_visit_days": customers_by_id.get(r["id"], {}).get("lastVisitDays"),
+                    "rank": i + 1,
+                }
+                for i, r in enumerate(ranked)
+            ],
         },
     )
 

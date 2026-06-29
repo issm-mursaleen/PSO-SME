@@ -29,6 +29,7 @@ type VisualPoint = {
   tone?: string;
   rank?: number;
   invoiceCount?: number;
+  lastVisitDays?: number;
   period?: string;
   customerId?: string;
 };
@@ -89,16 +90,23 @@ function ChartTooltip({
       {typeof point?.invoiceCount === 'number' && !point?.meta && (
         <p className="mt-0.5 font-mono text-muted-foreground tabular-nums">{point.invoiceCount} invoices</p>
       )}
+      {typeof point?.lastVisitDays === 'number' && (
+        <p className="mt-0.5 font-mono text-muted-foreground tabular-nums">Last visit: {point.lastVisitDays}d ago</p>
+      )}
       {point?.period && <p className="mt-0.5 text-[10px] text-muted-foreground">{point.period}</p>}
     </div>
   );
 }
 
+const STAT_COLS: Record<number, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3', 4: 'grid-cols-2 sm:grid-cols-4' };
+
 function StatStrip({ stats, chartType }: { stats: { label: string; value: unknown }[]; chartType: string }) {
   if (!stats.length) return null;
+  const shown = stats.slice(0, 4);
+  const cols = chartType === 'kpi' ? 'grid-cols-1 sm:grid-cols-3' : STAT_COLS[shown.length] ?? 'grid-cols-3';
   return (
-    <div className={`grid gap-px border-b border-outline-variant bg-outline-variant/70 ${chartType === 'kpi' ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-3'}`}>
-      {stats.slice(0, 3).map((s, i) => (
+    <div className={`grid gap-px border-b border-outline-variant bg-outline-variant/70 ${cols}`}>
+      {shown.map((s, i) => (
         <div key={i} className="min-w-0 bg-card px-3 py-2.5">
           <p className="truncate font-mono text-[9px] uppercase text-muted-foreground">{s.label}</p>
           <p className={`mt-1 truncate font-semibold tabular-nums text-foreground ${chartType === 'kpi' ? 'text-base' : 'text-xs'}`}>
