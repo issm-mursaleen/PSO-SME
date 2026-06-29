@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Workflow results ────────────────────────────────────────────────────────
@@ -58,6 +58,13 @@ class VisualizationIn(BaseModel):
     # Named period presets: "this_week", "last_week", "this_month", "last_month",
     # "this_year", "year_to_date". Takes precedence over period_value/period_unit.
     preset: str | None = None
+    # Top-N for ranking-style kinds (e.g. top_customers). "top 3 customers" → 3.
+    limit: int = Field(default=5, ge=1, le=20)
+    # top_customers only: rank over all-time invoices ("lifetime", default when no date
+    # range given) or just the resolved date range ("selected_period", when one is given).
+    scope: Literal["lifetime", "selected_period"] = "lifetime"
+    # top_customers only: rank by total revenue (default) or by invoice count.
+    ranking_metric: Literal["revenue", "invoice_count"] = "revenue"
 
 
 # ── Chat ────────────────────────────────────────────────────────────────────

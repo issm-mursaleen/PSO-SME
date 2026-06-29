@@ -65,9 +65,22 @@ PLAN_SYSTEM_PROMPT = (
     "'Konsi customers pichle N din mein nahi aayin / inactive' → `list_customers` with "
     "filter='inactive' and idle_days=N.\n\n"
     "ANALYTICAL ANSWERS — never answer a business question with a single metric when "
-    "richer data is available. 'sab se zyada business / most business / best customer' = "
-    "highest LIFETIME SALES value (query_data top_by_sales). For a 360° question about one "
-    "customer call `customer_insight`; for shop-wide ranking call `query_data`. These tools "
+    "richer data is available. For a 360° question about ONE named customer call "
+    "`customer_insight`.\n\n"
+    "CUSTOMER RANKING — top_customers is the ONLY supported way to rank/list multiple "
+    "customers by performance; `query_data`'s template='top_by_sales' is LEGACY and reserved "
+    "ONLY for a bare singular question with no ranking/graph/list/report/top-N wording, e.g. "
+    "'mera best customer kaun hai?' (a short direct answer, no chart). Any request containing "
+    "rank, ranking, ranked, top N, best N, highest, 'sab se zyada', a plural 'customers'/'grahak' "
+    "mention, list, compare, dikhao, chart, graph, report or visualization — even phrased as "
+    "'customers based on business' or 'customers ranked by sales' — MUST call "
+    "`show_visualization(kind='top_customers')`, never `query_data`. If uncertain, prefer "
+    "`show_visualization(kind='top_customers')` over the legacy `query_data` card. "
+    "Set chartType='bar'. Set limit to the requested top-N (e.g. 'top 3'/'top3'/'best 5' → 3/5; "
+    "a bare singular 'best customer' with no number → limit=1; otherwise omit it for the "
+    "default of 5). Set ranking_metric='invoice_count' only when the user explicitly asks by "
+    "number of invoices/transactions, otherwise ranking_metric='revenue'. Set scope='lifetime' "
+    "when no date range is given, or scope='selected_period' when one is. These tools "
     "return the figures, context and recommended actions — so do NOT invent numbers yourself.\n\n"
     "INVENTORY & SUPPLIERS — you also know the shop's full inventory and supplier directory. "
     "For one product's stock/reorder/preferred-supplier use `get_product`; for a filtered product "
@@ -97,7 +110,13 @@ PLAN_SYSTEM_PROMPT = (
     "Do not calculate date boundaries yourself. "
     "ALWAYS use group_by='auto' unless the user EXPLICITLY says daily/weekly/monthly/yearly. "
     "ONE number → kpi. Comparison → bar. Change over time → area or line. "
-    "Percentage split → donut. Target progress → progress.\n\n"
+    "Percentage split → donut. Target progress → progress. "
+    "MULTI-INTENT: when the user asks for several distinct analyses in one message "
+    "(e.g. 'sales trend, top 3 customers aur inventory risk dikhao'), call `show_visualization` "
+    "ONCE PER requested view — do not collapse them into a single generic chart. Preserve the "
+    "user's stated order, and reuse the SAME date range across all of them. Never invent or "
+    "duplicate a kind that wasn't asked for. Respect explicit top-N phrasing — 'top 3 customers' "
+    "or 'top3' or 'best 5' → limit=3/5 on the top_customers call only.\n\n"
     "PROGRESSIVE DISCLOSURE: simple question = short direct answer; analytical question = "
     "answer + supporting metrics; full-profile request = detailed customer card. When you add "
     "a short reply for an analytical question, follow this order: (1) seedha jawab, (2) key "
@@ -423,7 +442,8 @@ TOOLS: list[dict[str, Any]] = [
             "Show a sales or supplier-purchase visualization for a requested "
             "relative or explicit date range. Use kind='sales_trend' for customer "
             "sales, 'supplier_purchase_trend' for supplier purchases, "
-            "'top_customers' for a customer ranking, 'product_mix' for item breakdown, "
+            "'top_customers' for ANY customer ranking/top-N/list request (preferred over the "
+            "legacy query_data tool whenever uncertain), 'product_mix' for item breakdown, "
             "'customer_type_split' for a segment pie, 'inventory_risk' for low-stock "
             "SKUs, 'reorder_progress' for reorder level progress."
         ),
@@ -442,6 +462,9 @@ TOOLS: list[dict[str, Any]] = [
             "date_from": {"type": "string"},
             "date_to": {"type": "string"},
             "group_by": {"type": "string", "enum": ["day", "week", "month", "year", "auto"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Top-N for ranking kinds, e.g. \"top 3 customers\" -> 3. Default 5."},
+            "scope": {"type": "string", "enum": ["lifetime", "selected_period"], "description": "top_customers only: lifetime (default, no date range given) or selected_period (a date range was given)."},
+            "ranking_metric": {"type": "string", "enum": ["revenue", "invoice_count"], "description": "top_customers only: revenue (default) or invoice_count."},
         }, "required": ["kind"]}}},
 ]
 

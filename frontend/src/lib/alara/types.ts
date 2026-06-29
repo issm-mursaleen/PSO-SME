@@ -53,9 +53,22 @@ export type CardType =
   | 'insight' // 360° analytical answer: figures + context + risks + actions
   | 'csv_export'
   | 'visualization'
+  | 'tabbed_visualization' // 2+ show_visualization results from one multi-intent message
   | 'navigate';
 
 export type CardData = Record<string, unknown>;
+
+// ── Structured insights (deterministic facts, not LLM-authored prose) ────────
+export interface InsightFact {
+  type: string;
+  label: string;
+  formatted_value: string;
+}
+export interface StructuredInsights {
+  headline: string;
+  facts: InsightFact[];
+  recommendedAction?: { label: string; prompt: string };
+}
 
 export type ToolCallStatus = 'pending' | 'confirmed' | 'failed';
 

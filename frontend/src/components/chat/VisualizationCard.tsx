@@ -291,14 +291,89 @@ function ChartBody({
   return <BarPoints points={points} onPrompt={onPrompt} />;
 }
 
-export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
-  const d = msg.cardData ?? {};
+type InsightFact = { type: string; label: string; formatted_value: string };
+type Insights = { headline: string; facts: InsightFact[]; recommendedAction?: { label: string; prompt: string } };
+
+function InsightsBlock({ insights, onPrompt }: { insights: Insights; onPrompt: (p: string) => void }) {
+  return (
+    <div className="border-t border-outline-variant bg-surface-container-lowest p-3">
+      <p className="mb-1.5 font-mono text-[9px] font-bold uppercase text-muted-foreground">Insights</p>
+      <p className="text-[11px] leading-relaxed text-foreground/90">{insights.headline}</p>
+      {insights.facts.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {insights.facts.map((f, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 rounded-md border border-outline-variant bg-card px-2 py-1 text-[10px]"
+            >
+              <span className="text-muted-foreground">{f.label}:</span>
+              <span className="font-semibold text-foreground">{f.formatted_value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {insights.recommendedAction && (
+        <button
+          onClick={() => onPrompt(insights.recommendedAction!.prompt)}
+          className="mt-2.5 inline-flex items-center gap-1 rounded-lg border border-outline-variant bg-card px-2.5 py-1.5 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:border-foreground/30"
+        >
+          {insights.recommendedAction.label}
+          <ChevronRight className="size-3 text-muted-foreground" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The body of a visualization card (everything except the title/subtitle
+ *  header): stats strip, chart, insights/explanation, suggested steps. Shared
+ *  by the single-chart VisualizationCard and TabbedVisualizationCard's
+ *  per-tab content, so chart rendering is never duplicated. */
+export function VisualizationBody({ cardData, onPrompt }: { cardData: Record<string, unknown>; onPrompt: (p: string) => void }) {
+  const d = cardData;
   const points = Array.isArray(d.points)
     ? (d.points as VisualPoint[]).filter((p) => Number.isFinite(Number(p.value)))
     : [];
   const stats = Array.isArray(d.stats) ? (d.stats as { label: string; value: unknown }[]) : [];
   const explanation = Array.isArray(d.explanation) ? (d.explanation as string[]) : [];
+  const insights = d.insights as Insights | undefined;
   const steps = Array.isArray(d.steps) ? (d.steps as Step[]) : [];
+  const chartType = str(d.chartType) || 'bar';
+
+  return (
+    <>
+      <StatStrip stats={stats} chartType={chartType} />
+      <ChartBody chartType={chartType} points={points} onPrompt={onPrompt} />
+
+      {insights ? (
+        <InsightsBlock insights={insights} onPrompt={onPrompt} />
+      ) : (
+        explanation.length > 0 && (
+          <div className="border-t border-outline-variant bg-surface-container-lowest p-3">
+            <p className="mb-1.5 font-mono text-[9px] font-bold uppercase text-muted-foreground">Explanation</p>
+            <ul className="space-y-1">
+              {explanation.map((line, i) => (
+                <li key={i} className="flex items-start gap-2 text-[11px] leading-relaxed text-foreground/90">
+                  <span className="mt-1.5 size-1 rounded-full bg-foreground/60 shrink-0" />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )
+      )}
+
+      {steps.length > 0 && (
+        <div className="space-y-1.5 border-t border-outline-variant bg-surface-container-lowest p-2">
+          {steps.map((s, i) => <StepButton key={i} s={s} onPrompt={onPrompt} />)}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
+  const d = msg.cardData ?? {};
   const chartType = str(d.chartType) || 'bar';
   const meta = CHART_META[chartType] ?? CHART_META.bar;
   const HeaderIcon = meta.icon;
@@ -317,28 +392,7 @@ export function VisualizationCard({ msg, actions }: VisualizationCardProps) {
         </span>
       </div>
 
-      <StatStrip stats={stats} chartType={chartType} />
-      <ChartBody chartType={chartType} points={points} onPrompt={actions.onPrompt} />
-
-      {explanation.length > 0 && (
-        <div className="border-t border-outline-variant bg-surface-container-lowest p-3">
-          <p className="mb-1.5 font-mono text-[9px] font-bold uppercase text-muted-foreground">Explanation</p>
-          <ul className="space-y-1">
-            {explanation.map((line, i) => (
-              <li key={i} className="flex items-start gap-2 text-[11px] leading-relaxed text-foreground/90">
-                <span className="mt-1.5 size-1 rounded-full bg-foreground/60 shrink-0" />
-                <span>{line}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {steps.length > 0 && (
-        <div className="space-y-1.5 border-t border-outline-variant bg-surface-container-lowest p-2">
-          {steps.map((s, i) => <StepButton key={i} s={s} onPrompt={actions.onPrompt} />)}
-        </div>
-      )}
+      <VisualizationBody cardData={d} onPrompt={actions.onPrompt} />
     </div>
   );
 }

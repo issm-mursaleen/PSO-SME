@@ -424,7 +424,7 @@ def _viz_top_customers(inp: VisualizationIn, start: date, end: date, group_by: s
             tally[cid] = {"id": cid, "name": inv["customerName"], "total": 0.0, "invoices": 0}
         tally[cid]["total"] += float(inv["amount"])
         tally[cid]["invoices"] += 1
-    ranked = sorted(tally.values(), key=lambda x: x["total"], reverse=True)[:10]
+    ranked = sorted(tally.values(), key=lambda x: x["total"], reverse=True)[: inp.limit]
     return WorkflowResult(
         ok=True,
         workflow="show_visualization",

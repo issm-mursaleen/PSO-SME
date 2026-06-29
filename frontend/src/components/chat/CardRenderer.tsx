@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { AlaraChatMessage, CardData } from '@/lib/alara/types';
 import { VisualizationCard as BetterVisualizationCard } from './VisualizationCard';
+import { TabbedVisualizationCard } from './TabbedVisualizationCard';
 
 export interface CardActions {
   onConfirm: (messageId: string) => void;
@@ -747,6 +748,7 @@ const CARDS: Record<string, (p: CardProps) => ReactNode> = {
   insight: InsightCard,
   csv_export: CsvExportCard,
   visualization: BetterVisualizationCard,
+  tabbed_visualization: TabbedVisualizationCard,
   navigate: NavigateCard,
 };
 

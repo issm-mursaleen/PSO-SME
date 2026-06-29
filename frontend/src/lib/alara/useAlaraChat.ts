@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
 import { useApp } from '@/context/AppContext';
 import { planChat, type PlanResponse, type ChatHistoryMessage } from '@/lib/api';
 import type { AlaraChatMessage, AlaraToolContext, ChatThread, ToolCall } from './types';
-import { TOOLS } from './tools';
+import { TOOLS, VIZ_KIND_META } from './tools';
 import { toToolSchemas } from './types';
 import { runToolCall, commitToolCall } from './toolRunner';
 
@@ -43,6 +43,10 @@ export function useAlaraChat() {
   // Always-fresh tool context (avoids stale closures in async handlers). Updated
   // after every render so handlers read the latest AppContext state.
   const ctxRef = useRef<AlaraToolContext>(null as unknown as AlaraToolContext);
+  // Remembers the show_visualization call(s) behind the most recently shown
+  // chart(s) — lets a bare follow-up ("sirf top 2 kar do") re-run them with
+  // one field adjusted, without the user repeating the whole request.
+  const lastVisualizationCallsRef = useRef<ToolCall[]>([]);
   useEffect(() => {
     ctxRef.current = {
       customers: app.customers,
@@ -131,12 +135,88 @@ export function useAlaraChat() {
   }, []);
 
   /** Run one plan's tool calls; returns read data (for re-plan) + whether any
-   *  call paused for confirmation or terminated the turn. */
+   *  call paused for confirmation or terminated the turn.
+   *
+   *  show_visualization calls are buffered instead of appended immediately:
+   *  a single one renders as today (one 'visualization' card), but 2+ from
+   *  the same plan are merged into one 'tabbed_visualization' card so a
+   *  multi-intent request ("sales trend aur top customers dikhao") shows as
+   *  one card with tabs instead of several separate chat bubbles. A failed
+   *  visualization still gets its own tab (status:'error'), so one bad kind
+   *  never drops the others. */
   const applyPlan = useCallback((plan: PlanResponse): { readData: unknown[]; halted: boolean } => {
     const readData: unknown[] = [];
     let halted = false;
+    const vizBuffer: { kind: string; outcome: ReturnType<typeof runToolCall> }[] = [];
+    const successfulVizCalls: ToolCall[] = [];
+
+    const flushViz = () => {
+      if (vizBuffer.length === 0) return;
+      if (vizBuffer.length === 1) {
+        const { outcome } = vizBuffer[0];
+        append({
+          id: uid(),
+          sender: 'alara',
+          text: outcome.text,
+          cardType: outcome.cardType,
+          cardData: outcome.cardData,
+          toolCall: outcome.toolCall,
+          status: outcome.status,
+        });
+      } else {
+        const tabs = vizBuffer.map(({ kind, outcome }) => {
+          const meta = VIZ_KIND_META[kind] ?? { label: 'Chart', icon: 'BarChart3' };
+          const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
+          const firstStatValue = stats?.[0]?.value;
+          const badge = typeof firstStatValue === 'number' && firstStatValue < 100 ? String(firstStatValue) : undefined;
+          const isSuccess = outcome.cardType === 'visualization';
+          return {
+            id: kind,
+            label: meta.label,
+            icon: meta.icon,
+            badge,
+            status: isSuccess ? 'success' : 'error',
+            cardData: outcome.cardData ?? {},
+            error: isSuccess ? undefined : outcome.text,
+          };
+        });
+        const subtitle = vizBuffer
+          .map(({ outcome }) => outcome.cardData?.subtitle)
+          .find((s): s is string => typeof s === 'string');
+        const facts = vizBuffer
+          .map(({ outcome }) => {
+            const insights = outcome.cardData?.insights as { headline?: string } | undefined;
+            if (insights?.headline) return insights.headline;
+            const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
+            const first = stats?.[0];
+            return first ? `${first.label}: ${String(first.value)}.` : null;
+          })
+          .filter((s): s is string => Boolean(s));
+        append({
+          id: uid(),
+          sender: 'alara',
+          text: `${tabs.length} views ready — ${tabs.map((t) => t.label).join(', ')}.`,
+          cardType: 'tabbed_visualization',
+          cardData: {
+            title: 'Business performance',
+            subtitle,
+            combinedSummary: facts.length ? { headline: facts.join(' '), facts } : undefined,
+            tabs,
+          },
+        });
+      }
+      vizBuffer.length = 0;
+    };
+
     for (const call of plan.tool_calls) {
       const outcome = runToolCall(call as ToolCall, ctxRef.current);
+      if (call.name === 'show_visualization') {
+        const kind = String((call as ToolCall).args.kind ?? outcome.cardData?.kind ?? 'sales_trend');
+        vizBuffer.push({ kind, outcome });
+        if (outcome.cardType === 'visualization') successfulVizCalls.push(call as ToolCall);
+        continue; // flushed below once a non-visualization call appears, or at the end
+      }
+      flushViz();
       append({
         id: uid(),
         sender: 'alara',
@@ -151,6 +231,8 @@ export function useAlaraChat() {
       else if (outcome.data) readData.push({ tool: call.name, ...outcome.data });
       else if (outcome.cardType === 'disambiguation') halted = true;
     }
+    flushViz();
+    if (successfulVizCalls.length) lastVisualizationCallsRef.current = successfulVizCalls;
     return { readData, halted };
   }, [append]);
 
@@ -200,10 +282,18 @@ export function useAlaraChat() {
 
       try {
         let plan: PlanResponse;
-        try {
-          plan = await planChat(t, tools, context, baseHistory);
-        } catch {
-          plan = localPlan(t); // backend unreachable
+        // A bare follow-up ("sirf top 2 kar do", "date range 6 weeks kar do")
+        // adjusts the last shown chart(s) directly — no planner round-trip,
+        // so it works the same whether the backend/LLM is reachable or not.
+        const adjustment = buildFollowUpAdjustment(t, lastVisualizationCallsRef.current);
+        if (adjustment) {
+          plan = { tool_calls: adjustment, source: 'fallback' };
+        } else {
+          try {
+            plan = await planChat(t, tools, context, baseHistory);
+          } catch {
+            plan = localPlan(t); // backend unreachable
+          }
         }
 
         if (plan.tool_calls.length === 0) {
@@ -349,6 +439,57 @@ export function useAlaraChat() {
   };
 }
 
+// ── Bare follow-up adjustment ("sirf top 2 kar do", "date range 6 weeks kar
+// do") — re-runs the last shown show_visualization call(s) with one field
+// changed, instead of requiring the user to repeat the whole request. ───────
+function parsePeriodUnit(raw: string): 'days' | 'weeks' | 'months' | 'years' {
+  if (/din|day/.test(raw)) return 'days';
+  if (/hafte|hafton|week/.test(raw)) return 'weeks';
+  if (/maheene|mahine|month/.test(raw)) return 'months';
+  return 'years';
+}
+
+function buildFollowUpAdjustment(text: string, lastCalls: ToolCall[]): ToolCall[] | null {
+  if (lastCalls.length === 0) return null;
+  const low = text.trim().toLowerCase();
+
+  const topMatch = low.match(/^\s*(?:sirf\s+)?top\s*(\d+)\s*(?:kar\s*do|karo|kardo)?\s*\.?$/);
+  if (topMatch) {
+    const limit = Number(topMatch[1]);
+    let touched = false;
+    const adjusted = lastCalls.map((c) => {
+      if (c.name === 'show_visualization' && c.args.kind === 'top_customers') {
+        touched = true;
+        return { ...c, args: { ...c.args, limit } };
+      }
+      return c;
+    });
+    return touched ? adjusted : null;
+  }
+
+  const rangeMatch = low.match(
+    /^\s*(?:date\s*range|range)\s+(\d+)\s*(din|dino|days?|hafte|hafton|weeks?|maheene|mahine|months?|saal|years?)\s*(?:kar\s*do|karo|kardo)?\s*\.?$/,
+  );
+  if (rangeMatch) {
+    const value = Number(rangeMatch[1]);
+    const unit = parsePeriodUnit(rangeMatch[2].toLowerCase());
+    const group_by =
+      unit === 'days' ? 'day' : unit === 'weeks' ? (value <= 4 ? 'day' : 'week') : unit === 'months' ? (value <= 2 ? 'week' : 'month') : 'month';
+    let touched = false;
+    const adjusted = lastCalls.map((c) => {
+      if (c.name !== 'show_visualization') return c;
+      touched = true;
+      const { date_from, date_to, ...rest } = c.args;
+      void date_from;
+      void date_to;
+      return { ...c, args: { ...rest, period_value: value, period_unit: unit, group_by } };
+    });
+    return touched ? adjusted : null;
+  }
+
+  return null;
+}
+
 // ── Offline fallback planner (only when the backend is unreachable) ──────────
 function localPlan(message: string): PlanResponse {
   const text = message.trim();
@@ -478,56 +619,57 @@ function localPlan(message: string): PlanResponse {
     const p = nameBefore('ka|ki|mein|ke|kitna|stock');
     if (p) return fb([{ name: 'get_product', args: { product: p } }]);
   }
-  // Top-N customers intent ("top 3 customers", "top3 grahak", "best 5 customers")
-  // is checked BEFORE the generic sales-trend block below, so a time-bounded
-  // request like "pichle 3 weeks mei top 3 customers ka data dikhao" doesn't
-  // get swallowed by the generic sales_trend fallback.
+  // Multi-intent visualization detection: scan for ALL requested chart kinds
+  // (not just the first match), so "sales trend aur top 3 customers dikhao"
+  // returns ONE show_visualization call per requested view, in the user's
+  // order, sharing the same date range — instead of collapsing into one
+  // generic chart. A single matched kind behaves exactly as before (one call).
   const topLimitMatch = low.match(/(?:top|best)\s*(\d+)/);
-  // Require an explicit "top N" / plural "customers" wording — not a bare
-  // "best customer kaun hai", which stays routed to query_data's insight card.
-  const isTopCustomerIntent =
+  // Require an explicit "top N" / plural "customers" / "customer ranking"
+  // wording — not a bare "best customer kaun hai", which stays routed to
+  // query_data's insight card (checked further down).
+  const isTopCustomersKind =
     /(customer|grahak|client)/.test(low) &&
-    (Boolean(topLimitMatch) || /(top|best)\s*\d*\s*(customers|grahako|clients)/.test(low));
-  if (isTopCustomerIntent) {
-    return fb([
-      {
-        name: 'show_visualization',
-        args: {
-          kind: 'top_customers',
-          chartType: 'bar',
-          ...(topLimitMatch ? { limit: Number(topLimitMatch[1]) } : {}),
-          ...periodArgs,
-        },
-      },
-    ]);
+    (Boolean(topLimitMatch) ||
+      /(top|best)\s*\d*\s*(customers|grahako|clients)\b/.test(low) ||
+      /(customer|customers)\s+ranking/.test(low));
+
+  const kindMatches: { kind: string; index: number }[] = [];
+  const pushMatch = (kind: string, regex: RegExp) => {
+    const m = low.match(regex);
+    if (m && m.index !== undefined) kindMatches.push({ kind, index: m.index });
+  };
+  pushMatch('reorder_progress', /(reorder progress|stock vs reorder)/);
+  pushMatch('inventory_risk', /(inventory risk|low stock|stock risk|reorder level)/);
+  pushMatch('customer_type_split', /(customer.type|type split|segment split|customer split)/);
+  pushMatch('product_mix', /(product mix|item mix)/);
+  pushMatch('supplier_purchase_trend', /(supplier purchase|supplier purchases)/);
+  if (isTopCustomersKind) {
+    const idx = low.search(/top|best|ranking/);
+    kindMatches.push({ kind: 'top_customers', index: idx >= 0 ? idx : 0 });
   }
-  const hasTimePeriod = Object.keys(periodArgs).length > 0;
-  const hasAnalyticsSubject = /(sale|sales|revenue|purchase|purchases|customer|inventory|stock)/.test(low);
-  if (hasTimePeriod && hasAnalyticsSubject) {
-    return fb([
-      {
-        name: 'show_visualization',
-        args: {
-          kind: /(purchase|purchases)/.test(low) ? 'supplier_purchase_trend' : 'sales_trend',
-          chartType: /(compare|comparison)/.test(low) ? 'bar' : 'area',
-          ...periodArgs,
-        },
-      },
-    ]);
+  pushMatch('sales_trend', /(sales\s*trend|\bsales\b|\bsale\b)/);
+
+  kindMatches.sort((a, b) => a.index - b.index);
+  const orderedKinds: string[] = [];
+  for (const { kind } of kindMatches) if (!orderedKinds.includes(kind)) orderedKinds.push(kind);
+
+  if (orderedKinds.length > 0) {
+    const calls = orderedKinds.slice(0, 6).map((kind) => {
+      const args: Record<string, unknown> = { kind, ...periodArgs };
+      if (kind === 'top_customers') {
+        args.chartType = 'bar';
+        if (topLimitMatch) args.limit = Number(topLimitMatch[1]);
+      } else if ((kind === 'sales_trend' || kind === 'supplier_purchase_trend') && /(compare|comparison)/.test(low)) {
+        args.chartType = 'bar';
+      }
+      return { name: 'show_visualization', args };
+    });
+    return fb(calls);
   }
-  // Dynamic visualization cards: charts/graphs with explanations + suggested actions.
-  if (/(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison|split|percentage|share|progress|target|goal)/.test(low)) {
-    if (/(progress|target|goal)/.test(low) && /(inventory|stock|sku|reorder|low)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'reorder_progress', ...periodArgs } }]);
-    if (/(split|percentage|share)/.test(low) && /(customer|grahak|client|type|segment)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'customer_type_split', ...periodArgs } }]);
-    if (/(inventory|stock|sku|reorder|low)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'inventory_risk', ...periodArgs } }]);
-    if (/(product|item|sku|mix)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'product_mix', ...periodArgs } }]);
-    if (/(customer|grahak|client|top|best)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'top_customers', ...periodArgs } }]);
-    return fb([{ name: 'show_visualization', args: { kind: /(purchase|purchases)/.test(low) ? 'supplier_purchase_trend' : 'sales_trend', chartType: 'area', ...periodArgs } }]);
+  // Bare "invoices dikhao" / "inki invoices bhi dikhao" → open the Invoices page.
+  if (/^\s*(inki\s+|unki\s+|in\s+)?invoices?\s*(bhi)?\s*(dikhao|kholo|do|chahiye)?\s*\.?$/.test(low)) {
+    return fb([{ name: 'navigate', args: { page: 'invoices' } }]);
   }
   // Proactive next-steps: "ab kya karun", "next step", "what next", "suggestion".
   if (/(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)/.test(low)) {

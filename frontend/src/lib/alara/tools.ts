@@ -152,8 +152,10 @@ const queryData: AlaraTool = {
   name: 'query_data',
   tier: 'read',
   description:
-    'Answer a shop-wide question with a fixed template: best customers by lifetime ' +
-    'sales (top_by_sales), or total recorded sales (sales_today).',
+    'LEGACY single-answer templates: total recorded sales (sales_today), or a bare ' +
+    'singular "who is my best customer" lookup with NO ranking/graph/list/report/top-N ' +
+    'wording (top_by_sales). For ANY ranking, top-N, list, chart or "customers based on ' +
+    'business/sales" request, use show_visualization(kind="top_customers") instead — never this.',
   parameters: {
     type: 'object',
     properties: {
@@ -161,8 +163,10 @@ const queryData: AlaraTool = {
         type: 'string',
         enum: ['top_by_sales', 'sales_today'],
         description:
-          'top_by_sales = best customers by LIFETIME SALES VALUE (use for "sab se zyada ' +
-          'business / most business / best customer"). sales_today = total recorded sales.',
+          'top_by_sales = a short textual answer naming the single best customer by lifetime ' +
+          'sales, for a bare question like "mera best customer kaun hai?" with no ranking/graph/' +
+          'list/top-N wording. Prefer show_visualization(kind="top_customers") whenever uncertain. ' +
+          'sales_today = total recorded sales.',
       },
     },
     required: ['template'],
@@ -1222,12 +1226,12 @@ const exportCustomerRankingCsv: AlaraTool = {
       period_unit: { type: 'string', enum: ['days', 'weeks', 'months', 'years'] },
       date_from: { type: 'string' },
       date_to: { type: 'string' },
-      limit: { type: 'integer', minimum: 1, description: 'How many ranked customers to export. Default 6.' },
+      limit: { type: 'integer', minimum: 1, description: 'How many ranked customers to export. Default 5, clamped to 1–20 — same as show_visualization.' },
     },
   },
   preview: (args, ctx) => {
     const range = resolveVisualizationRange(args);
-    const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 50);
+    const limit = Math.min(Math.max(Number(args.limit ?? 5) || 5, 1), 20);
     const ranked = rankCustomersBySales(ctx, range, limit);
     const rangeLabel = formatRange(range.start, range.end);
     const rows = ranked.map((r, i) => ({
@@ -1609,6 +1613,19 @@ function buildTrendPoints(rows: TrendRow[], groupBy: Exclude<GroupBy, 'auto'>) {
     });
 }
 
+/** Label + lucide icon-name (string, resolved to a component by the chat UI)
+ *  for each visualization kind — shared by tab labels/icons in the merged
+ *  tabbed card and by the tool's own per-kind branches below. */
+export const VIZ_KIND_META: Record<string, { label: string; icon: string }> = {
+  sales_trend: { label: 'Sales trend', icon: 'TrendingUp' },
+  supplier_purchase_trend: { label: 'Supplier purchases', icon: 'Truck' },
+  top_customers: { label: 'Top customers', icon: 'Users' },
+  product_mix: { label: 'Product mix', icon: 'Package' },
+  customer_type_split: { label: 'Customer split', icon: 'PieChart' },
+  inventory_risk: { label: 'Inventory risk', icon: 'AlertTriangle' },
+  reorder_progress: { label: 'Reorder progress', icon: 'Target' },
+};
+
 const showVisualization: AlaraTool = {
   name: 'show_visualization',
   tier: 'read',
@@ -1642,13 +1659,13 @@ const showVisualization: AlaraTool = {
       date_from: { type: 'string', description: 'Explicit start date in YYYY-MM-DD format.' },
       date_to: { type: 'string', description: 'Explicit end date in YYYY-MM-DD format.' },
       group_by: { type: 'string', enum: ['day', 'week', 'month', 'year', 'auto'], description: 'Grouping for trend charts. Use auto unless the user asks.' },
-      limit: { type: 'integer', minimum: 1, description: 'Number of bars/rows to show, e.g. "top 3 customers" → 3. Default 6, clamped to 3–10.' },
+      limit: { type: 'integer', minimum: 1, description: 'Number of bars/rows to show, e.g. "top 3 customers" → 3. Default 5, clamped to 1–20.' },
     },
     required: ['kind'],
   },
   preview: (args, ctx) => {
     const kind = String(args.kind ?? 'sales_trend');
-    const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 3), 10);
+    const limit = Math.min(Math.max(Number(args.limit ?? 5) || 5, 1), 20);
     const chartTypeOverride = args.chartType ? String(args.chartType) : undefined;
 
     if (kind === 'sales_trend' || kind === 'supplier_purchase_trend') {
@@ -1694,6 +1711,7 @@ const showVisualization: AlaraTool = {
       const total = points.reduce((s, p) => s + p.value, 0);
       const best = points.slice().sort((a, b) => b.value - a.value)[0];
       const trendTitle = kind === 'supplier_purchase_trend' ? 'Supplier Purchase Trend' : 'Sales Trend';
+      const trendRangeLabel = formatRange(range.start, range.end);
       return {
         ok: true,
         text: `Sales trend visualization ready — ${points.length} periods, total ${pkr(total)}.`,
@@ -1701,6 +1719,7 @@ const showVisualization: AlaraTool = {
         cardData: {
           kind,
           title: trendTitle,
+          subtitle: trendRangeLabel,
           chartType: chartTypeOverride ?? 'area',
           date_from: isoDate(range.start),
           date_to: isoDate(range.end),
@@ -1716,7 +1735,19 @@ const showVisualization: AlaraTool = {
             `${isoDate(range.start)} se ${isoDate(range.end)} tak data ${range.groupBy} ke hisaab se group hua hai.`,
             best ? `${best.label} strongest period hai at ${best.meta}.` : 'Is range mein koi record nahi mila.',
           ],
+          insights: kind === 'sales_trend'
+            ? {
+              headline: `${trendRangeLabel} mein total sales ${pkr(total)} rahi (${dated.length} invoices).`,
+              facts: [
+                { type: 'total', label: 'Total sales', formatted_value: pkr(total) },
+                { type: 'invoice_count', label: 'Invoices', formatted_value: String(dated.length) },
+                ...(best ? [{ type: 'best_period', label: 'Best period', formatted_value: best.label }] : []),
+              ],
+              recommendedAction: { label: 'Invoices dekho', prompt: 'Invoices kholo' },
+            }
+            : undefined,
           steps: [
+            { label: 'Invoices dekho', prompt: 'Invoices kholo', reason: 'Is period ki billing detail', tone: 'normal' },
             kind === 'supplier_purchase_trend'
               ? { label: 'Supplier payables dekho', prompt: 'Supplier payables dikhao', reason: 'Pending aur overdue bills', tone: 'normal' }
               : { label: 'Top customers ka chart dikhao', prompt: 'Top customers ka visualization dikhao', reason: 'Revenue kis customer se aa raha hai', tone: 'normal' },
@@ -1736,12 +1767,16 @@ const showVisualization: AlaraTool = {
       const rangeLabel = formatRange(range.start, range.end);
 
       const explanation: string[] = [];
+      const facts: { type: string; label: string; formatted_value: string }[] = [];
       if (leader) {
         const share = shownTotal > 0 ? Math.round((leader.value / shownTotal) * 100) : 0;
         explanation.push(`${leader.c.name} ne ${rangeLabel} mein ${pkr(leader.value)} ka business diya — displayed sales ka ${share}%.`);
+        facts.push({ type: 'leader', label: 'Top customer', formatted_value: pkr(leader.value) });
+        facts.push({ type: 'share', label: `Top ${ranked.length} sales share`, formatted_value: `${share}%` });
         if (second && second.value > 0) {
           const lead = Math.round(((leader.value - second.value) / second.value) * 100);
           explanation.push(`${leader.c.name} ${second.c.name} se ${lead}% aage hai.`);
+          facts.push({ type: 'lead_over_second', label: 'Lead over #2', formatted_value: `${lead}%` });
         } else {
           explanation.push(`Is range mein sirf ${leader.c.name} ki recorded sales hain.`);
         }
@@ -1756,6 +1791,7 @@ const showVisualization: AlaraTool = {
           : `${rangeLabel} mein koi customer sales nahi mili.`,
         cardType: 'visualization',
         cardData: {
+          kind,
           title: `Top ${ranked.length || limit} customers by sales`,
           subtitle: rangeLabel,
           chartType: chartTypeOverride ?? 'bar',
@@ -1775,6 +1811,13 @@ const showVisualization: AlaraTool = {
             customerId: r.c.id,
           })),
           explanation,
+          insights: leader
+            ? {
+              headline: `${leader.c.name} ${rangeLabel} ki top customer rahi.`,
+              facts,
+              recommendedAction: { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo` },
+            }
+            : undefined,
           steps: leader
             ? [
               { label: `${leader.c.name} ka profile kholo`, prompt: `${leader.c.name} ka page kholo`, reason: 'Full sales history dekhein', tone: 'normal' },
@@ -1813,6 +1856,7 @@ const showVisualization: AlaraTool = {
         text: `Product mix visualization ready — ${ranked.length} products by invoice revenue.`,
         cardType: 'visualization',
         cardData: {
+          kind,
           title: 'Product Mix by Revenue',
           chartType: chartTypeOverride ?? 'bar',
           stats: [
@@ -1856,6 +1900,7 @@ const showVisualization: AlaraTool = {
         text: `Customer type split ready — ${ranked.length} segments, total ${pkr(total)}.`,
         cardType: 'visualization',
         cardData: {
+          kind,
           title: 'Sales Split by Customer Type',
           chartType: chartTypeOverride ?? 'donut',
           stats: [
@@ -1892,6 +1937,7 @@ const showVisualization: AlaraTool = {
         text: `Reorder progress ready — ${low.length} SKUs below their reorder target.`,
         cardType: 'visualization',
         cardData: {
+          kind,
           title: 'Stock vs Reorder Target',
           chartType: chartTypeOverride ?? 'progress',
           stats: [
@@ -1927,11 +1973,13 @@ const showVisualization: AlaraTool = {
       .sort((a, b) => b.riskScore - a.riskScore)
       .slice(0, limit);
     const low = ctx.inventory.filter((i) => i.current <= i.reorder);
+    const highestRiskShortage = ranked[0] ? Math.max(0, ranked[0].item.reorder - ranked[0].item.current) : 0;
     return {
       ok: true,
       text: `Inventory risk visualization ready — ${low.length} SKUs at or below reorder level.`,
       cardType: 'visualization',
       cardData: {
+        kind,
         title: 'Inventory Risk',
         chartType: chartTypeOverride ?? 'bar',
         stats: [
@@ -1949,10 +1997,24 @@ const showVisualization: AlaraTool = {
           'Risk bars current stock, reorder level, aur stock-out pressure ko combine karke bante hain.',
           low.length ? `${low.length} items reorder level par ya us se neeche hain.` : 'Inventory currently reorder threshold se upar hai.',
         ],
+        insights: low.length
+          ? {
+            headline: `${low.length} SKUs reorder level se neeche hain.`,
+            facts: [
+              { type: 'low_stock_count', label: 'Low stock SKUs', formatted_value: String(low.length) },
+              ...(ranked[0] ? [{ type: 'highest_risk', label: 'Highest risk', formatted_value: ranked[0].item.product }] : []),
+              ...(ranked[0] ? [{ type: 'shortage', label: 'Shortage', formatted_value: `${highestRiskShortage} units` }] : []),
+            ],
+            recommendedAction: ranked[0]
+              ? { label: `${ranked[0].item.product} stock in karo`, prompt: `${ranked[0].item.product} ka stock add karo` }
+              : undefined,
+          }
+          : undefined,
         steps: ranked[0]
           ? [
             { label: `${ranked[0].item.product} stock in karo`, prompt: `${ranked[0].item.product} ka stock add karo`, reason: `${ranked[0].item.current} units left`, tone: 'urgent' },
             { label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Full stock table dekhein', tone: 'normal' },
+            { label: 'Low-stock list dikhao', prompt: 'Low stock products ki list dikhao', reason: 'Saari kam-stock items ek jagah', tone: 'normal' },
           ]
           : [{ label: 'Inventory page kholo', prompt: 'Inventory kholo', reason: 'Stock detail dekhein', tone: 'normal' }],
       },
