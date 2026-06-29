@@ -43,10 +43,11 @@ cp .env.example .env        # add OPENAI_API_KEY for the LLM path (optional)
 Health check: `GET http://localhost:8000/api/health`.
 
 ## Frontend wiring
-The Next app reads `NEXT_PUBLIC_API_URL` (see `../.env.local`, default
-`http://localhost:8000`). `src/lib/api.ts` POSTs chat messages here; the chat
-falls back to a local mock if the backend is unreachable. Balance-affecting chat
-actions are mirrored into the frontend `AppContext` so the UI stays in sync.
+The Next app (in `../frontend`) reads `NEXT_PUBLIC_API_URL` (see
+`../frontend/.env.local`, default `http://localhost:8000`).
+`frontend/src/lib/api.ts` POSTs chat messages here; the chat falls back to a
+local mock if the backend is unreachable. Balance-affecting chat actions are
+mirrored into the frontend `AppContext` so the UI stays in sync.
 
 > Note: the backend keeps its **own** seeded store. It's the source of truth for
 > chat/queries/alerts; the app pages still read the client `AppContext`. Migrating
