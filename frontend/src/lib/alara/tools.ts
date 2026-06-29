@@ -154,7 +154,7 @@ const queryData: AlaraTool = {
   name: 'query_data',
   tier: 'read',
   description:
-    'LEGACY single-answer templates: total recorded sales (sales_today), or a bare ' +
+    "LEGACY single-answer templates: today's total sales only — not lifetime (sales_today), or a bare " +
     'singular "who is my best customer" lookup with NO ranking/graph/list/report/top-N ' +
     'wording (top_by_sales). For ANY ranking, top-N, list, chart or "customers based on ' +
     'business/sales" request, use show_visualization(kind="top_customers") instead — never this.',
@@ -168,7 +168,7 @@ const queryData: AlaraTool = {
           'top_by_sales = a short textual answer naming the single best customer by lifetime ' +
           'sales, for a bare question like "mera best customer kaun hai?" with no ranking/graph/' +
           'list/top-N wording. Prefer show_visualization(kind="top_customers") whenever uncertain. ' +
-          'sales_today = total recorded sales.',
+          "sales_today = total sales recorded TODAY only (not lifetime) — use for \"aaj ki sales kitni hain\".",
       },
     },
     required: ['template'],
@@ -214,19 +214,23 @@ const queryData: AlaraTool = {
       };
     }
     if (template === 'sales_today') {
-      const total = ctx.invoices.reduce((s, i) => s + i.amount, 0);
+      const today = new Date().toISOString().slice(0, 10);
+      const todays = ctx.invoices.filter((i) => i.date === today);
+      const total = todays.reduce((s, i) => s + i.amount, 0);
       return {
         ok: true,
-        text: `Total recorded sales ${pkr(total)} (${ctx.invoices.length} invoices).`,
+        text: todays.length
+          ? `Aaj ki total sales ${pkr(total)} hain (${todays.length} invoices).`
+          : 'Aaj tak koi sale record nahi hui.',
         cardType: 'metric',
         cardData: {
-          title: 'Sales',
+          title: "Today's Sales",
           stats: [
             { label: 'Total Sales', value: pkr(total) },
-            { label: 'Invoices', value: ctx.invoices.length },
+            { label: 'Invoices', value: todays.length },
           ],
         },
-        data: { total, count: ctx.invoices.length },
+        data: { total, count: todays.length },
       };
     }
     return err('Yeh query samajh nahi aayi.', 'unknown_template');

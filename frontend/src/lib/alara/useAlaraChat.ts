@@ -144,9 +144,16 @@ export function useAlaraChat() {
    *  one card with tabs instead of several separate chat bubbles. A failed
    *  visualization still gets its own tab (status:'error'), so one bad kind
    *  never drops the others. */
-  const applyPlan = useCallback((plan: PlanResponse): { readData: unknown[]; halted: boolean } => {
+  const applyPlan = useCallback((plan: PlanResponse): {
+    readData: unknown[];
+    halted: boolean;
+    lastCardType?: string;
+    contextCustomerName?: string;
+  } => {
     const readData: unknown[] = [];
     let halted = false;
+    let lastCardType: string | undefined;
+    let contextCustomerName: string | undefined;
     const vizBuffer: { kind: string; outcome: ReturnType<typeof runToolCall> }[] = [];
     const successfulVizCalls: ToolCall[] = [];
 
@@ -163,6 +170,7 @@ export function useAlaraChat() {
           toolCall: outcome.toolCall,
           status: outcome.status,
         });
+        lastCardType = outcome.cardType;
       } else {
         const tabs = vizBuffer.map(({ kind, outcome }) => {
           const meta = VIZ_KIND_META[kind] ?? { label: 'Chart', icon: 'BarChart3' };
@@ -204,6 +212,7 @@ export function useAlaraChat() {
             tabs,
           },
         });
+        lastCardType = 'tabbed_visualization';
       }
       vizBuffer.length = 0;
     };
@@ -245,6 +254,9 @@ export function useAlaraChat() {
         toolCall: outcome.toolCall,
         status: outcome.status,
       });
+      lastCardType = outcome.cardType;
+      const cardCustomerName = outcome.cardData?.customer_name;
+      if (typeof cardCustomerName === 'string' && cardCustomerName) contextCustomerName = cardCustomerName;
       if (outcome.navigateTo) ctxRef.current.navigate(outcome.navigateTo);
       if (outcome.pending) halted = true; // awaiting confirmation
       else if (outcome.data) readData.push({ tool: call.name, ...outcome.data });
@@ -252,7 +264,21 @@ export function useAlaraChat() {
     }
     flushViz();
     if (successfulVizCalls.length) lastVisualizationCallsRef.current = successfulVizCalls;
-    return { readData, halted };
+    return { readData, halted, lastCardType, contextCustomerName };
+  }, [append]);
+
+  /** Appends a "Suggested next steps" card after a turn completes — unless
+   *  the turn is awaiting confirmation/disambiguation, or already ended on
+   *  one (avoids back-to-back duplicates). Tailored to the customer involved
+   *  in the just-finished turn when one is known, else shop-wide priorities. */
+  const appendNextSteps = useCallback((contextCustomerName?: string) => {
+    const outcome = runToolCall(
+      { name: 'suggest_next_steps', args: contextCustomerName ? { customer: contextCustomerName } : {} },
+      ctxRef.current,
+    );
+    if (outcome.cardType === 'next_steps') {
+      append({ id: uid(), sender: 'alara', text: outcome.text, cardType: outcome.cardType, cardData: outcome.cardData });
+    }
   }, [append]);
 
   const historyFrom = (msgs: AlaraChatMessage[]): ChatHistoryMessage[] =>
@@ -317,15 +343,22 @@ export function useAlaraChat() {
 
         if (plan.tool_calls.length === 0) {
           append({ id: uid(), sender: 'alara', text: plan.final_text || 'Ji, batayein main kaise madad karun?' });
+          appendNextSteps();
         } else {
-          applyPlan(plan);
+          const { halted, lastCardType, contextCustomerName } = applyPlan(plan);
           if (plan.final_text) append({ id: uid(), sender: 'alara', text: plan.final_text });
+          // Every turn ends with a next-best-action suggestion, unless the
+          // last card is already awaiting the user's confirmation/choice or
+          // is itself a next-steps card (no back-to-back duplicates).
+          if (!halted && lastCardType !== 'next_steps' && lastCardType !== 'disambiguation') {
+            appendNextSteps(contextCustomerName);
+          }
         }
       } finally {
         setIsTyping(false);
       }
     },
-    [app.customers, app.suppliers, append, applyPlan, chatMessages],
+    [app.customers, app.suppliers, append, applyPlan, appendNextSteps, chatMessages],
   );
 
   // ── Card actions ─────────────────────────────────────────────────────────────
@@ -357,7 +390,11 @@ export function useAlaraChat() {
       cardData: res.cardData,
     });
     if (res.navigateTo) ctxRef.current.navigate(res.navigateTo);
-  }, [chatMessages, append]);
+    if (res.ok && res.cardType !== 'next_steps') {
+      const name = res.cardData?.customer_name;
+      appendNextSteps(typeof name === 'string' ? name : undefined);
+    }
+  }, [chatMessages, append, appendNextSteps]);
 
   /** Send a comms draft card: dispatch it into the Outreach workspace (logs to
    *  commLogs via the tool's commit), instead of opening an external WhatsApp tab. */
@@ -371,7 +408,9 @@ export function useAlaraChat() {
       sender: 'alara',
       text: `Message Outreach tab mein bhej diya — ${String(msg.cardData?.recipientName ?? '')}. Connect page par dekh sakte hain.`,
     });
-  }, [append, chatMessages]);
+    const name = msg.cardData?.recipientName;
+    appendNextSteps(typeof name === 'string' ? name : undefined);
+  }, [append, chatMessages, appendNextSteps]);
 
   /** Pick a candidate from a disambiguation card and re-run the original tool. */
   const pickCandidate = useCallback((messageId: string, candidate: { id: string; name: string }) => {
@@ -394,7 +433,11 @@ export function useAlaraChat() {
       status: outcome.status,
     });
     if (outcome.navigateTo) ctxRef.current.navigate(outcome.navigateTo);
-  }, [append, chatMessages]);
+    if (!outcome.pending && outcome.cardType !== 'disambiguation' && outcome.cardType !== 'next_steps') {
+      const name = outcome.cardData?.customer_name ?? candidate.name;
+      appendNextSteps(typeof name === 'string' ? name : undefined);
+    }
+  }, [append, chatMessages, appendNextSteps]);
 
   // ── Threads ──────────────────────────────────────────────────────────────────
   const startNewChat = useCallback(() => {
