@@ -381,11 +381,11 @@ def _plan_fallback(message: str) -> PlanOut:
 
     # Bulk outreach FIRST so "inactive walon ko message" doesn't grab a name.
     if re.search(r"(sab|bulk|inactive|lapsed|purane|walon)", low) and \
-            re.search(r"(reminder|message|bhej|yaad|offer)", low):
+            re.search(r"(reminder|message|bhej|yaad|offer|outreach)", low):
         return call("bulk_remind", {"filter": "inactive"})
 
-    # Single reminder/outreach: "X ko message likhdo / reminder / yaad dilao".
-    if re.search(r"(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft)", low):
+    # Single reminder/outreach: "X ko message likhdo / reminder / yaad dilao / outreach karo".
+    if re.search(r"(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft|outreach)", low):
         cust = _name_before(text, r"ko|ka|ki|ke")
         if cust:
             return call("draft_reminder", {"customer": cust})

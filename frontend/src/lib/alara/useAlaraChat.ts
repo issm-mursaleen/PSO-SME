@@ -708,11 +708,11 @@ function localPlan(message: string): PlanResponse {
     if (customer) return fb([], `${customer} ka bill banane ke liye har item ka rate bhi likhein, e.g. "50 doodh @ 200, 10 cheeni @ 300".`);
   }
   // Bulk outreach FIRST: "inactive/lapsed walon ko message bhejo".
-  if (/(sab|sabko|sab ko|bulk|inactive|lapsed|purane|walon)/.test(low) && /(reminder|message|bhej|yaad|offer)/.test(low)) {
+  if (/(sab|sabko|sab ko|bulk|inactive|lapsed|purane|walon)/.test(low) && /(reminder|message|bhej|yaad|offer|outreach)/.test(low)) {
     return fb([{ name: 'bulk_remind', args: { filter: 'inactive' } }]);
   }
-  // Single reminder / outreach: "X ko message likhdo", "reminder bhejo", "yaad dilao".
-  if (/(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft)/.test(low)) {
+  // Single reminder / outreach: "X ko message likhdo", "reminder bhejo", "yaad dilao", "X ko outreach karo".
+  if (/(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft|outreach)/.test(low)) {
     const c = nameBefore('ko|ka|ki|ke');
     if (c) return fb([{ name: 'draft_reminder', args: { customer: c } }]);
   }
