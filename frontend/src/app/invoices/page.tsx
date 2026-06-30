@@ -179,7 +179,7 @@ function InvoicesListContent() {
       </div>
 
       {/* Search Bar */}
-      <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col md:flex-row gap-4 justify-end items-center shadow-sm">
+      <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col md:flex-row gap-4 justify-start items-center shadow-sm">
         <div className="relative w-full md:w-80">
           <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-outline" size={18} />
           <input
