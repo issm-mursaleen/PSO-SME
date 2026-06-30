@@ -355,18 +355,10 @@ function InvoicesListContent() {
                 <button
                   type="button"
                   onClick={() => downloadDocFile(previewDoc)}
-                  className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg border border-outline-variant text-xs font-bold text-foreground hover:bg-muted transition-colors"
+                  className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/85 active:scale-[0.98] transition-all"
                 >
                   <Icon name="download" size={16} />
                   Download
-                </button>
-                <button
-                  type="button"
-                  onClick={() => printDoc(previewDoc)}
-                  className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/85 active:scale-[0.98] transition-all"
-                >
-                  <Icon name="print" size={16} />
-                  Print / Save PDF
                 </button>
               </div>
             </div>
