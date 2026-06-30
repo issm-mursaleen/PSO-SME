@@ -322,67 +322,28 @@ const customerVisit: AlaraTool = {
         const spanDays = (times[times.length - 1] - times[0]) / 86_400_000;
         const avg = Math.round(spanDays / (times.length - 1));
         if (avg > 0) {
-          frequency = `Takreeban har ${avg} din baad aate hain (${times.length} visits se).`;
           const next = new Date(visit.date);
           next.setDate(next.getDate() + avg);
           nextExpected = next.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+          frequency = `Takreeban har ${avg} din baad aate hain — agla visit ~${nextExpected} ke aas paas expected hai.`;
         }
       }
     }
 
-    const stats = [
-      { label: 'Last Visit', value: visit.absolute },
-      { label: 'Kitna Pehle', value: visit.relative },
-    ];
-    if (lastSale) stats.push({ label: 'Last Sale', value: pkr(lastSale.amount) });
-
-    const context: string[] = [`${customer.name} aakhri baar ${visit.absolute} ko aaye the — yani ${visit.relative}.`];
-    context.push('Exact waqt (time) record nahi hua — sirf tareekh maujood hai.');
-    if (frequency) context.push(frequency);
-    if (nextExpected) context.push(`Is hisaab se agla visit ~${nextExpected} ke aas paas expected hai.`);
-
-    const missing: string[] = [];
-    if (!lastSale) missing.push('Is customer ki koi recorded sale nahi mili — last sale amount maujood nahi.');
-
-    // One relevant next action only.
-    const steps: NextStep[] = [];
-    if (customer.lastVisitDays >= 14)
-      steps.push({
-        label: `${customer.name} ko win-back offer bhejo`,
-        prompt: `${customer.name} ko ek dostana offer message bhejo`,
-        reason: `${visit.relative} se koi khareedari nahi`,
-        tone: 'opportunity',
-      });
-    else if (customer.lastVisitDays >= 7)
-      steps.push({
-        label: `${customer.name} ko check-in message bhejo`,
-        prompt: `${customer.name} ko reminder bhejo`,
-        reason: `${visit.relative} — halka sa check-in due hai`,
-        tone: 'normal',
-      });
-    else
-      steps.push({
-        label: `${customer.name} ka profile kholo`,
-        prompt: `${customer.name} ka page kholo`,
-        reason: 'Poori visit history aur sales',
-        tone: 'normal',
-      });
-
-    const direct =
-      `${customer.name} aakhri baar ${visit.absolute} ko aaye the — yani ${visit.relative}.` +
-      (lastSale ? ` Us waqt ${pkr(lastSale.amount)} ki sale hui thi.` : '');
+    // A focused question gets a short, spoken-style answer — no stat-grid card.
+    // Extra context (frequency, next-expected) is only tacked on when it's
+    // actually informative, not just because it's computable.
+    let direct = `${customer.name} aakhri baar ${visit.absolute} ko aaye the — yani ${visit.relative}.`;
+    direct += lastSale ? ` Us waqt ${pkr(lastSale.amount)} ki sale hui thi.` : ' Is customer ki koi recorded sale nahi mili.';
+    if (frequency) direct += ` ${frequency}`;
 
     return {
       ok: true,
       text: direct,
-      cardType: 'insight',
-      cardData: {
-        title: `${customer.name} — Last Visit`,
-        stats,
-        context,
-        missing,
-        steps,
-      },
+      // No cardType: this stays a plain chat reply. customer_name still
+      // flows through so the next-steps engine can offer a relevant
+      // follow-up (win-back/check-in) without rendering a heavy card here.
+      cardData: { customer_name: customer.name },
       data: { customer_id: customer.id, last_visit_days: customer.lastVisitDays, last_visit: visit.absolute },
     };
   },

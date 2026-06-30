@@ -166,3 +166,6 @@ class PlanOut(BaseModel):
     tool_calls: list[ToolCallOut] = []
     final_text: Optional[str] = None
     source: Literal["llm", "fallback"] = "fallback"
+    # Hash of the shared intent spec this planner was built from — lets callers
+    # verify the frontend and backend were generated from identical rules.
+    intent_spec_hash: Optional[str] = None

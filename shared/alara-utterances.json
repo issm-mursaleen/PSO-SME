@@ -1,0 +1,712 @@
+{
+  "note": "Parity corpus for Alara's deterministic planner. Generated from the backend _plan_from_spec then asserted against by BOTH the frontend (planner.spec.ts) and backend (test_planner.py) suites. Because both planners must equal this single golden, they are guaranteed equal to each other. Regenerate intentionally only when behaviour changes; review every diff.",
+  "cases": [
+    {
+      "utterance": "Tariq ne 1200 ka saman liya",
+      "expect": {
+        "tools": [
+          "record_sale"
+        ],
+        "args": [
+          {
+            "customer": "Tariq",
+            "amount": 1200
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "naya customer - Imran, Street 9",
+      "expect": {
+        "tools": [
+          "add_customer"
+        ],
+        "args": [
+          {
+            "name": "Imran",
+            "area": "Street 9"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "new customer - Bilal Traders, Saddar, hotel wala",
+      "expect": {
+        "tools": [
+          "add_customer"
+        ],
+        "args": [
+          {
+            "name": "Bilal Traders",
+            "area": "Saddar"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "INV-4821 dikhao",
+      "expect": {
+        "tools": [
+          "get_invoice"
+        ],
+        "args": [
+          {
+            "invoice_id": "INV-4821"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq Hotel ka pichla bill dikhao",
+      "expect": {
+        "tools": [
+          "get_invoice"
+        ],
+        "args": [
+          {
+            "customer": "Tariq Hotel"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Sindh Dairy ka last invoice dekho",
+      "expect": {
+        "tools": [
+          "get_invoice"
+        ],
+        "args": [
+          {
+            "customer": "Sindh Dairy"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq Hotel ka bill - 50 doodh @ 200, 10 cheeni @ 300",
+      "expect": {
+        "tools": [
+          "create_invoice"
+        ],
+        "args": [
+          {
+            "customer": "Tariq Hotel",
+            "items": [
+              {
+                "name": "doodh",
+                "qty": 50,
+                "rate": 200
+              },
+              {
+                "name": "cheeni",
+                "qty": 10,
+                "rate": 300
+              }
+            ]
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq Hotel ka bill banao",
+      "expect": {
+        "tools": [],
+        "args": [],
+        "final_text": "Tariq Hotel ka bill banane ke liye har item ka rate bhi likhein, e.g. \"50 doodh @ 200, 10 cheeni @ 300\"."
+      }
+    },
+    {
+      "utterance": "sab inactive customers ko outreach bhejo",
+      "expect": {
+        "tools": [
+          "bulk_remind"
+        ],
+        "args": [
+          {
+            "filter": "inactive"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "lapsed walon ko reminder bhejo",
+      "expect": {
+        "tools": [
+          "bulk_remind"
+        ],
+        "args": [
+          {
+            "filter": "inactive"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Sindh Dairy ko outreach karo",
+      "expect": {
+        "tools": [
+          "draft_reminder"
+        ],
+        "args": [
+          {
+            "customer": "Sindh Dairy"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq ko reminder bhejo",
+      "expect": {
+        "tools": [
+          "draft_reminder"
+        ],
+        "args": [
+          {
+            "customer": "Tariq"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Imran ko message likho",
+      "expect": {
+        "tools": [
+          "draft_reminder"
+        ],
+        "args": [
+          {
+            "customer": "Imran"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq Hotel last time kab aaya tha",
+      "expect": {
+        "tools": [
+          "customer_visit"
+        ],
+        "args": [
+          {
+            "customer": "Tariq Hotel"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Sindh Dairy kitne din se nahi aaya",
+      "expect": {
+        "tools": [
+          "customer_visit"
+        ],
+        "args": [
+          {
+            "customer": "Sindh Dairy"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "kaun se customers 10 din se nahi aaye",
+      "expect": {
+        "tools": [
+          "list_customers"
+        ],
+        "args": [
+          {
+            "filter": "inactive",
+            "idle_days": 10
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "pichle 3 mahine ki supplier purchase trend dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "supplier_purchase_trend",
+            "chartType": "area",
+            "period_value": 3,
+            "period_unit": "months",
+            "group_by": "month"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "sindh dairy supplier ki purchasing excel sheet mein do",
+      "expect": {
+        "tools": [
+          "export_supplier_csv"
+        ],
+        "args": [
+          {
+            "dataset": "supplier_invoices",
+            "supplier": "sindh dairy"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "supplier ki purchasing csv mein do",
+      "expect": {
+        "tools": [
+          "export_supplier_csv"
+        ],
+        "args": [
+          {
+            "dataset": "supplier_invoices",
+            "supplier": "supplier"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "overdue supplier payments dikhao",
+      "expect": {
+        "tools": [
+          "supplier_payables"
+        ],
+        "args": [
+          {
+            "status": "overdue"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "supplier se invoice receive hui",
+      "expect": {
+        "tools": [
+          "draft_supplier_invoice"
+        ],
+        "args": [
+          {
+            "supplier": "supplier"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "supplier purchases analysis",
+      "expect": {
+        "tools": [
+          "supplier_purchase_analysis"
+        ],
+        "args": [
+          {}
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Sindh Dairy supplier dikhao",
+      "expect": {
+        "tools": [
+          "get_supplier"
+        ],
+        "args": [
+          {
+            "supplier": "Sindh Dairy"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "saare suppliers ki list",
+      "expect": {
+        "tools": [
+          "list_suppliers"
+        ],
+        "args": [
+          {}
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "suppliers directory csv mein export karo",
+      "expect": {
+        "tools": [
+          "export_supplier_csv"
+        ],
+        "args": [
+          {
+            "dataset": "suppliers"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "low stock products dikhao",
+      "expect": {
+        "tools": [
+          "list_inventory"
+        ],
+        "args": [
+          {
+            "filter": "low_stock"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "out of stock items list",
+      "expect": {
+        "tools": [
+          "list_inventory"
+        ],
+        "args": [
+          {
+            "filter": "out_of_stock"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "doodh ka stock kitna hai",
+      "expect": {
+        "tools": [
+          "get_product"
+        ],
+        "args": [
+          {
+            "product": "doodh"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "sales trend dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "sales_trend"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "top 3 customers based on business",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "top_customers",
+            "chartType": "bar",
+            "limit": 3,
+            "ranking_metric": "revenue",
+            "scope": "lifetime"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "top 5 customers by number of invoices",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "top_customers",
+            "chartType": "bar",
+            "limit": 5,
+            "ranking_metric": "invoice_count",
+            "scope": "lifetime"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "pichle 3 hafton ki sales trend aur top 3 customers dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization",
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "sales_trend",
+            "period_value": 3,
+            "period_unit": "weeks",
+            "group_by": "day"
+          },
+          {
+            "kind": "top_customers",
+            "period_value": 3,
+            "period_unit": "weeks",
+            "group_by": "day",
+            "chartType": "bar",
+            "limit": 3,
+            "ranking_metric": "revenue",
+            "scope": "selected_period"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "inventory risk chart dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "inventory_risk"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "product mix dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "product_mix"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "customer type split dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization",
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "customer_type_split"
+          },
+          {
+            "kind": "top_customers",
+            "chartType": "bar",
+            "limit": 1,
+            "ranking_metric": "revenue",
+            "scope": "lifetime"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "reorder progress dikhao",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "reorder_progress"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "invoices dikhao",
+      "expect": {
+        "tools": [
+          "navigate"
+        ],
+        "args": [
+          {
+            "page": "invoices"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "ab kya karu",
+      "expect": {
+        "tools": [
+          "suggest_next_steps"
+        ],
+        "args": [
+          {}
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq ke liye next step suggest karo",
+      "expect": {
+        "tools": [
+          "suggest_next_steps"
+        ],
+        "args": [
+          {
+            "customer": "Tariq"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "best customer kaun hai",
+      "expect": {
+        "tools": [
+          "query_data"
+        ],
+        "args": [
+          {
+            "template": "top_by_sales"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "sabse zyada business kis customer ka hai",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "top_customers",
+            "chartType": "bar",
+            "limit": 1,
+            "ranking_metric": "revenue",
+            "scope": "lifetime"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "Tariq Hotel ka business kaisa hai",
+      "expect": {
+        "tools": [
+          "customer_insight"
+        ],
+        "args": [
+          {
+            "customer": "Tariq Hotel"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "sales today",
+      "expect": {
+        "tools": [
+          "query_data"
+        ],
+        "args": [
+          {
+            "template": "sales_today"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "aaj ki total sales kitni hain",
+      "expect": {
+        "tools": [
+          "query_data"
+        ],
+        "args": [
+          {
+            "template": "sales_today"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "inventory kholo",
+      "expect": {
+        "tools": [
+          "navigate"
+        ],
+        "args": [
+          {
+            "page": "inventory"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "open customers",
+      "expect": {
+        "tools": [
+          "show_visualization"
+        ],
+        "args": [
+          {
+            "kind": "top_customers",
+            "chartType": "bar",
+            "ranking_metric": "revenue",
+            "scope": "lifetime"
+          }
+        ],
+        "final_text": null
+      }
+    },
+    {
+      "utterance": "hello",
+      "expect": {
+        "tools": [],
+        "args": [],
+        "final_text": "Ji, main sale likh sakti hun, customer add/update kar sakti hun, invoice bana sakti hun, outreach message bhej sakti hun, ya koi page khol sakti hun. Kya karna hai?"
+      }
+    },
+    {
+      "utterance": "shukriya",
+      "expect": {
+        "tools": [],
+        "args": [],
+        "final_text": "Ji, main sale likh sakti hun, customer add/update kar sakti hun, invoice bana sakti hun, outreach message bhej sakti hun, ya koi page khol sakti hun. Kya karna hai?"
+      }
+    }
+  ]
+}

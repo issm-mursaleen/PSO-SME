@@ -91,6 +91,9 @@ export interface PlanResponse {
   tool_calls: ToolCallWire[];
   final_text?: string | null;
   source: 'llm' | 'fallback';
+  /** Hash of the shared intent spec the planner was built from. Lets us verify
+   *  the frontend and backend were generated from identical routing rules. */
+  intent_spec_hash?: string | null;
 }
 
 /** POST a message + tool catalog to the planner; returns the tool calls to run.

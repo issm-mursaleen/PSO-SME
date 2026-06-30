@@ -11,10 +11,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/context/AppContext';
 import { planChat, type PlanResponse, type ChatHistoryMessage } from '@/lib/api';
-import type { AlaraChatMessage, AlaraToolContext, ChatThread, ToolCall } from './types';
+import type { AlaraChatMessage, AlaraToolContext, CardData, ChatThread, ToolCall } from './types';
 import { TOOLS, VIZ_KIND_META } from './tools';
 import { toToolSchemas } from './types';
-import { runToolCall, commitToolCall } from './toolRunner';
+import { runToolCall, commitToolCall, type RunOutcome } from './toolRunner';
+import { planLocal } from './planner';
 
 const CHAT_CACHE_KEY = 'alara-chat-cache-v1';
 const CHAT_CACHE_BACKUP_KEY = 'alara-chat-cache-v1-backup';
@@ -57,6 +58,55 @@ function bestChatCache(...caches: (ChatCache | null)[]): ChatCache | null {
     (best, cache) => (chatCacheScore(cache) > chatCacheScore(best) ? cache : best),
     null,
   );
+}
+
+// ── Tabbed-visualization assembly ────────────────────────────────────────────
+// A multi-intent message ("sales trend aur top customers dikhao") produces one
+// show_visualization outcome per requested view. These are buffered, then this
+// pure helper stitches them into a single 'tabbed_visualization' card: one tab
+// per view (a failed kind keeps its tab as status:'error' so one bad view never
+// drops the others), a shared subtitle, and a combined summary built from each
+// tab's own headline/first-stat — no new prose, just stitched facts.
+type VizBufferEntry = { kind: string; outcome: RunOutcome };
+
+function buildTabbedVizCard(buffer: VizBufferEntry[]): { text: string; cardData: CardData } {
+  const tabs = buffer.map(({ kind, outcome }) => {
+    const meta = VIZ_KIND_META[kind] ?? { label: 'Chart', icon: 'BarChart3' };
+    const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
+    const firstStatValue = stats?.[0]?.value;
+    const badge = typeof firstStatValue === 'number' && firstStatValue < 100 ? String(firstStatValue) : undefined;
+    const isSuccess = outcome.cardType === 'visualization';
+    return {
+      id: kind,
+      label: meta.label,
+      icon: meta.icon,
+      badge,
+      status: isSuccess ? 'success' : 'error',
+      cardData: outcome.cardData ?? {},
+      error: isSuccess ? undefined : outcome.text,
+    };
+  });
+  const subtitle = buffer
+    .map(({ outcome }) => outcome.cardData?.subtitle)
+    .find((s): s is string => typeof s === 'string');
+  const facts = buffer
+    .map(({ outcome }) => {
+      const insights = outcome.cardData?.insights as { headline?: string } | undefined;
+      if (insights?.headline) return insights.headline;
+      const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
+      const first = stats?.[0];
+      return first ? `${first.label}: ${String(first.value)}.` : null;
+    })
+    .filter((s): s is string => Boolean(s));
+  return {
+    text: `${tabs.length} views ready — ${tabs.map((t) => t.label).join(', ')}.`,
+    cardData: {
+      title: 'Business performance',
+      subtitle,
+      combinedSummary: facts.length ? { headline: facts.join(' '), facts } : undefined,
+      tabs,
+    },
+  };
 }
 
 export function useAlaraChat() {
@@ -192,7 +242,7 @@ export function useAlaraChat() {
     let lastCardType: string | undefined;
     let lastCardData: Record<string, unknown> | undefined;
     let lastToolCall: ToolCall | undefined;
-    const vizBuffer: { kind: string; outcome: ReturnType<typeof runToolCall> }[] = [];
+    const vizBuffer: VizBufferEntry[] = [];
     const successfulVizCalls: ToolCall[] = [];
 
     const flushViz = () => {
@@ -211,46 +261,8 @@ export function useAlaraChat() {
         lastCardType = outcome.cardType;
         lastCardData = outcome.cardData;
       } else {
-        const tabs = vizBuffer.map(({ kind, outcome }) => {
-          const meta = VIZ_KIND_META[kind] ?? { label: 'Chart', icon: 'BarChart3' };
-          const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
-          const firstStatValue = stats?.[0]?.value;
-          const badge = typeof firstStatValue === 'number' && firstStatValue < 100 ? String(firstStatValue) : undefined;
-          const isSuccess = outcome.cardType === 'visualization';
-          return {
-            id: kind,
-            label: meta.label,
-            icon: meta.icon,
-            badge,
-            status: isSuccess ? 'success' : 'error',
-            cardData: outcome.cardData ?? {},
-            error: isSuccess ? undefined : outcome.text,
-          };
-        });
-        const subtitle = vizBuffer
-          .map(({ outcome }) => outcome.cardData?.subtitle)
-          .find((s): s is string => typeof s === 'string');
-        const facts = vizBuffer
-          .map(({ outcome }) => {
-            const insights = outcome.cardData?.insights as { headline?: string } | undefined;
-            if (insights?.headline) return insights.headline;
-            const stats = outcome.cardData?.stats as { label: string; value: unknown }[] | undefined;
-            const first = stats?.[0];
-            return first ? `${first.label}: ${String(first.value)}.` : null;
-          })
-          .filter((s): s is string => Boolean(s));
-        append({
-          id: uid(),
-          sender: 'alara',
-          text: `${tabs.length} views ready — ${tabs.map((t) => t.label).join(', ')}.`,
-          cardType: 'tabbed_visualization',
-          cardData: {
-            title: 'Business performance',
-            subtitle,
-            combinedSummary: facts.length ? { headline: facts.join(' '), facts } : undefined,
-            tabs,
-          },
-        });
+        const { text, cardData } = buildTabbedVizCard(vizBuffer);
+        append({ id: uid(), sender: 'alara', text, cardType: 'tabbed_visualization', cardData });
         lastCardType = 'tabbed_visualization';
       }
       vizBuffer.length = 0;
@@ -258,25 +270,6 @@ export function useAlaraChat() {
 
     for (const call of plan.tool_calls) {
       const outcome = runToolCall(call as ToolCall, ctxRef.current);
-      // TEMP DEBUG LOGGING — verifying the customer-ranking routing fix;
-      // remove once confirmed query_data(top_by_sales) no longer fires for
-      // ranking/top-N customer requests.
-      if (call.name === 'show_visualization' || call.name === 'query_data') {
-        console.log('[alara:plan]', {
-          tool: call.name,
-          kind: (call as ToolCall).args.kind,
-          limit: (call as ToolCall).args.limit,
-          scope: (call as ToolCall).args.scope,
-          ranking_metric: (call as ToolCall).args.ranking_metric,
-          template: (call as ToolCall).args.template,
-          renderer:
-            call.name === 'show_visualization'
-              ? (call as ToolCall).args.kind === 'top_customers'
-                ? 'TopCustomersVisualization'
-                : 'VisualizationCard'
-              : 'MostBusinessCard(legacy)',
-        });
-      }
       if (call.name === 'show_visualization') {
         const kind = String((call as ToolCall).args.kind ?? outcome.cardData?.kind ?? 'sales_trend');
         vizBuffer.push({ kind, outcome });
@@ -632,241 +625,13 @@ function buildFollowUpAdjustment(text: string, lastCalls: ToolCall[]): ToolCall[
 }
 
 // ── Offline fallback planner (only when the backend is unreachable) ──────────
+// Delegates to the generic, spec-driven interpreter in planner.ts. That planner
+// is built from the SAME shared/alara-intents.json the backend reads, so the two
+// cannot drift. In development we surface the planner trace for debugging.
 function localPlan(message: string): PlanResponse {
-  const text = message.trim();
-  const low = text.toLowerCase();
-  const amt = (low.match(/\d[\d,]*/)?.[0] ?? '').replace(/,/g, '');
-  const nameBefore = (stop: string) =>
-    text.match(new RegExp(`^\\s*([A-Za-z][A-Za-z\\s]+?)\\s+(?:${stop})\\b`, 'i'))?.[1]?.trim();
-  const parsePeriod = (): Record<string, unknown> => {
-    const match = low.match(/(?:pichle|last|past)?\s*(\d+)\s*(din|dino|days?|hafte|hafton|weeks?|maheene|mahine|months?|saal|years?)/);
-    if (!match) return {};
-    const value = Number(match[1]);
-    const rawUnit = match[2].toLowerCase();
-    const unit = /din|day/.test(rawUnit)
-      ? 'days'
-      : /hafte|hafton|week/.test(rawUnit)
-        ? 'weeks'
-        : /maheene|mahine|month/.test(rawUnit)
-          ? 'months'
-          : 'years';
-    const group_by =
-      unit === 'days'
-        ? 'day'
-        : unit === 'weeks'
-          ? value <= 4 ? 'day' : 'week'
-          : unit === 'months'
-            ? value <= 2 ? 'week' : 'month'
-            : 'month';
-    return { period_value: value, period_unit: unit, group_by };
-  };
-
-  const fb = (tool_calls: { name: string; args: Record<string, unknown> }[], final_text?: string): PlanResponse => ({
-    tool_calls,
-    final_text,
-    source: 'fallback',
-  });
-
-  if (/\b(liya|le liya|saman|kharid|becha|sale|bika)\b/.test(low) && amt) {
-    const c = nameBefore('ne|ka|ki');
-    if (c)
-      return fb([
-        { name: 'record_sale', args: { customer: c, amount: Number(amt) } },
-      ]);
+  const result = planLocal(message);
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[alara:planner]', { hash: result.intent_spec_hash, ...result.trace });
   }
-  if (/(naya customer|add customer|new customer)/.test(low)) {
-    const rest = text.split(/[—\-:]/).slice(1).join(' ').trim() || text;
-    const parts = rest.split(',').map((p) => p.trim()).filter(Boolean);
-    if (parts.length) return fb([{ name: 'add_customer', args: { name: parts[0], area: parts[1] } }]);
-  }
-  // Show/preview a PREVIOUSLY generated invoice (not a new one): an explicit
-  // ID, or "<customer> ka last/pichla bill dikhao" — checked BEFORE the
-  // invoice-creation block below, since both mention "bill"/"invoice".
-  const invoiceIdMatch = text.match(/\bINV-[\w-]+/i);
-  if (invoiceIdMatch && /(dikhao|kholo|show|preview|dekho)/.test(low)) {
-    return fb([{ name: 'get_invoice', args: { invoice_id: invoiceIdMatch[0].toUpperCase() } }]);
-  }
-  if (
-    /\b(bill|invoice)\b/.test(low) &&
-    /(last|pichla|pichli|purana|purani|previous|recent|dikhao|dekho|kholo|preview)/.test(low) &&
-    !text.includes('@')
-  ) {
-    const cust = nameBefore('ka|ki|ke');
-    if (cust) return fb([{ name: 'get_invoice', args: { customer: cust } }]);
-  }
-  // Invoice: "Tariq Hotel ka bill — 50L doodh @ 200, 10kg cheeni @ 300".
-  if (/\b(bill|invoice)\b/.test(low)) {
-    const custM = text.match(/^\s*(.+?)\s+(?:ka|ki)\s+(?:bill|invoice)/i);
-    const customer = custM?.[1]?.trim();
-    const items: { name: string; qty: number; rate: number }[] = [];
-    const re = /(\d+(?:\.\d+)?)\s*[a-zA-Z]*\s+([a-zA-Z][a-zA-Z\s]*?)\s*@\s*(\d+(?:\.\d+)?)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      items.push({ qty: Number(m[1]), name: m[2].trim(), rate: Number(m[3]) });
-    }
-    if (customer && items.length) return fb([{ name: 'create_invoice', args: { customer, items } }]);
-    if (customer) return fb([], `${customer} ka bill banane ke liye har item ka rate bhi likhein, e.g. "50 doodh @ 200, 10 cheeni @ 300".`);
-  }
-  // Bulk outreach FIRST: "inactive/lapsed walon ko message bhejo".
-  if (/(sab|sabko|sab ko|bulk|inactive|lapsed|purane|walon)/.test(low) && /(reminder|message|bhej|yaad|offer|outreach)/.test(low)) {
-    return fb([{ name: 'bulk_remind', args: { filter: 'inactive' } }]);
-  }
-  // Single reminder / outreach: "X ko message likhdo", "reminder bhejo", "yaad dilao", "X ko outreach karo".
-  if (/(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft|outreach)/.test(low)) {
-    const c = nameBefore('ko|ka|ki|ke');
-    if (c) return fb([{ name: 'draft_reminder', args: { customer: c } }]);
-  }
-  // Visit / recency for ONE customer: "X last time kab aaya/aayi", "kitne din se nahi aaya".
-  if (/(kab aa\w*|last time|aakhri baar|kitne din|kab aaye|visit kab|kab aya)/.test(low)) {
-    const c = nameBefore('last|kab|kitne|aakhri|ka|ki|ko|ne');
-    if (c) return fb([{ name: 'customer_visit', args: { customer: c } }]);
-  }
-  // "Which customers haven't come in the last N days" → inactive list.
-  if (/(nahi aa\w*|nahin aa\w*|inactive|gayab)/.test(low) && /(din|days|customer|grahak|kaun|konsi|konse)/.test(low)) {
-    const dm = low.match(/(\d+)\s*(din|day)/);
-    const idle = dm ? Number(dm[1]) : 7;
-    return fb([{ name: 'list_customers', args: { filter: 'inactive', idle_days: idle } }]);
-  }
-  const periodArgs = parsePeriod();
-  // Supplier operations can be phrased without the literal word "supplier".
-  if (/(purchase|purchases|payable|outstanding|overdue|due|payment|inventory receive|receive hui)/.test(low)) {
-    const s = nameBefore('ki|ka|ke|se');
-    if (Object.keys(periodArgs).length > 0 && /(purchase|purchases)/.test(low))
-      return fb([{ name: 'show_visualization', args: { kind: 'supplier_purchase_trend', chartType: /(compare|comparison)/.test(low) ? 'bar' : 'area', ...periodArgs } }]);
-    if (/(csv|excel|xlsx?|spreadsheet|sheet|export|download)/.test(low))
-      return fb([{ name: 'export_supplier_csv', args: { dataset: 'supplier_invoices', ...(s ? { supplier: s } : {}) } }]);
-    if (/(payable|outstanding|overdue|due|payment|pending)/.test(low)) {
-      const status = /overdue/.test(low) ? 'overdue' : /due/.test(low) ? 'due_soon' : /paid/.test(low) ? 'paid' : /pending|outstanding/.test(low) ? 'pending' : 'all';
-      return fb([{ name: 'supplier_payables', args: { status, ...(s ? { supplier: s } : {}) } }]);
-    }
-    if (/(invoice|bill|draft|generate|banao|banado|receive hui)/.test(low))
-      return fb([{ name: 'draft_supplier_invoice', args: { ...(s ? { supplier: s } : {}) } }]);
-    return fb([{ name: 'supplier_purchase_analysis', args: { ...(s ? { supplier: s } : {}) } }]);
-  }
-  // Supplier directory / one supplier's profile.
-  if (/(supplier)/.test(low)) {
-    const s = nameBefore('se|ka|ki|supplier|ke');
-    if (/(csv|excel|xlsx?|spreadsheet|sheet|export|download)/.test(low)) {
-      const dataset = /(item|line)/.test(low) ? 'supplier_purchase_items' : /(directory|list|contact)/.test(low) ? 'suppliers' : 'supplier_invoices';
-      return fb([{ name: 'export_supplier_csv', args: { dataset, ...(s ? { supplier: s } : {}) } }]);
-    }
-    if (/(payable|outstanding|overdue|due|pending|payment)/.test(low)) {
-      const status = /overdue/.test(low) ? 'overdue' : /due/.test(low) ? 'due_soon' : /paid/.test(low) ? 'paid' : /pending|outstanding/.test(low) ? 'pending' : 'all';
-      return fb([{ name: 'supplier_payables', args: { status, ...(s ? { supplier: s } : {}) } }]);
-    }
-    if (/(purchase|purchases|analysis|trend|rank|compare|contribution|history)/.test(low)) {
-      return fb([{ name: 'supplier_purchase_analysis', args: { ...(s ? { supplier: s } : {}) } }]);
-    }
-    if (/(invoice|bill|draft|generate|banao|banado)/.test(low)) {
-      return fb([{ name: 'draft_supplier_invoice', args: { ...(s ? { supplier: s } : {}) } }]);
-    }
-    if (/(list|sab|all|directory|kitne)/.test(low))
-      return fb([{ name: 'list_suppliers', args: {} }]);
-    if (s) return fb([{ name: 'get_supplier', args: { supplier: s } }]);
-    return fb([{ name: 'list_suppliers', args: {} }]);
-  }
-  // Inventory listing: low/out-of-stock products.
-  if (/(low stock|out of stock|stock khatam|reorder)/.test(low) && /(product|item|inventory|list|kaunsi|konsi|sku)/.test(low)) {
-    const filter = /out of stock|khatam/.test(low) ? 'out_of_stock' : 'low_stock';
-    return fb([{ name: 'list_inventory', args: { filter } }]);
-  }
-  // One product's stock level: "<product> kitna stock hai / stock check".
-  if (/(kitna stock|stock check|stock hai|kitne (units|pieces)|stock kitna)/.test(low)) {
-    const p = nameBefore('ka|ki|mein|ke|kitna|stock');
-    if (p) return fb([{ name: 'get_product', args: { product: p } }]);
-  }
-  // Multi-intent visualization detection: scan for ALL requested chart kinds
-  // (not just the first match), so "sales trend aur top 3 customers dikhao"
-  // returns ONE show_visualization call per requested view, in the user's
-  // order, sharing the same date range — instead of collapsing into one
-  // generic chart. A single matched kind behaves exactly as before (one call).
-  // Customer-ranking detection — HIGH PRIORITY: must win over the legacy
-  // query_data top_by_sales template (further down) for anything beyond a
-  // bare singular question. A plural "customers" mention reaching this point
-  // (every more-specific earlier intent already ruled out) is treated as a
-  // ranking request even with no explicit rank/top-N word — matches phrasing
-  // like "customers based on business". A bare SINGULAR "customer" mention
-  // only counts when paired with an explicit number, a rank word, or an
-  // action word (chart/list/report/...) — so "mera best customer kaun hai?"
-  // stays a plain question (→ query_data), while "best customer ka chart
-  // dikhao" routes here with limit=1.
-  const topLimitMatch =
-    low.match(/\b(?:top|best)\s*(\d+)\b/) || low.match(/\brank(?:ed|ing)?\s+(?:my\s+)?(?:top\s*)?(\d+)\b/);
-  const mentionsCustomerPlural = /\b(customers|grahak\w*|clients)\b/.test(low);
-  const mentionsCustomerSingular = /\bcustomer\b/.test(low) && !mentionsCustomerPlural;
-  const hasExplicitRankingTrigger =
-    Boolean(topLimitMatch) ||
-    /(rank|ranking|ranked|highest|sab\s*se\s*zyada|sabse\s*zyada)/.test(low) ||
-    /(chart|graph|visual|dikhao|report|\blist\b|compare|comparison)/.test(low);
-  const isTopCustomersKind = mentionsCustomerPlural || (mentionsCustomerSingular && hasExplicitRankingTrigger);
-
-  const kindMatches: { kind: string; index: number }[] = [];
-  const pushMatch = (kind: string, regex: RegExp) => {
-    const m = low.match(regex);
-    if (m && m.index !== undefined) kindMatches.push({ kind, index: m.index });
-  };
-  pushMatch('reorder_progress', /(reorder progress|stock vs reorder)/);
-  pushMatch('inventory_risk', /(inventory risk|low stock|stock risk|reorder level)/);
-  pushMatch('customer_type_split', /(customer.type|type split|segment split|customer split)/);
-  pushMatch('product_mix', /(product mix|item mix)/);
-  pushMatch('supplier_purchase_trend', /(supplier purchase|supplier purchases)/);
-  if (isTopCustomersKind) {
-    const idx = low.search(/top|best|rank|highest|customer/);
-    kindMatches.push({ kind: 'top_customers', index: idx >= 0 ? idx : 0 });
-  }
-  pushMatch('sales_trend', /(sales\s*trend|\bsales\b|\bsale\b)/);
-
-  kindMatches.sort((a, b) => a.index - b.index);
-  const orderedKinds: string[] = [];
-  for (const { kind } of kindMatches) if (!orderedKinds.includes(kind)) orderedKinds.push(kind);
-
-  if (orderedKinds.length > 0) {
-    const calls = orderedKinds.slice(0, 6).map((kind) => {
-      const args: Record<string, unknown> = { kind, ...periodArgs };
-      if (kind === 'top_customers') {
-        args.chartType = 'bar';
-        // Explicit number wins; a bare singular "customer" mention implies
-        // exactly one; otherwise omit it and let the tool default to 5.
-        const limitValue = topLimitMatch ? Number(topLimitMatch[1]) : mentionsCustomerSingular ? 1 : undefined;
-        if (limitValue != null) args.limit = limitValue;
-        args.ranking_metric = /(invoice count|invoice_count|transactions?|number of invoices)/.test(low)
-          ? 'invoice_count'
-          : 'revenue';
-        args.scope = Object.keys(periodArgs).length > 0 ? 'selected_period' : 'lifetime';
-      } else if ((kind === 'sales_trend' || kind === 'supplier_purchase_trend') && /(compare|comparison)/.test(low)) {
-        args.chartType = 'bar';
-      }
-      return { name: 'show_visualization', args };
-    });
-    return fb(calls);
-  }
-  // Bare "invoices dikhao" / "inki invoices bhi dikhao" → open the Invoices page.
-  if (/^\s*(inki\s+|unki\s+|in\s+)?invoices?\s*(bhi)?\s*(dikhao|kholo|do|chahiye)?\s*\.?$/.test(low)) {
-    return fb([{ name: 'navigate', args: { page: 'invoices' } }]);
-  }
-  // Proactive next-steps: "ab kya karun", "next step", "what next", "suggestion".
-  if (/(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)/.test(low)) {
-    const c = nameBefore('ke|ka|ki|ko|for');
-    return fb([{ name: 'suggest_next_steps', args: c ? { customer: c } : {} }]);
-  }
-  // LEGACY — only reachable for a bare singular question with no ranking/
-  // graph/list/report/top-N wording (the scanner above already intercepted
-  // every plural "customers" mention and every triggered singular one).
-  if (/(sab se zyada|sabse zyada|most|best|top).*(business|sale|customer|grahak)|business.*(zyada|most)/.test(low))
-    return fb([{ name: 'query_data', args: { template: 'top_by_sales' } }]);
-  // Single-customer analysis: "X ka business / X kaisa customer / X ki performance".
-  if (/(business|performance|profile|kaisa|kaisi|kitna|analysis|insight|360)/.test(low)) {
-    const c = nameBefore('ka|ki|ke|kaisa|kaisi');
-    if (c) return fb([{ name: 'customer_insight', args: { customer: c } }]);
-  }
-  if (low.includes('sales today') || (low.includes('aaj') && low.includes('sale')))
-    return fb([{ name: 'query_data', args: { template: 'sales_today' } }]);
-  if (low.startsWith('open ') || low.includes('kholo') || low.includes('khol'))
-    return fb([{ name: 'navigate', args: { page: low.replace(/open |kholo|khol/g, '').trim() } }]);
-
-  return fb(
-    [],
-    'Ji, main sale likh sakti hun, customer add/update kar sakti hun, invoice bana sakti hun, ' +
-      'outreach message bhej sakti hun, ya koi page khol sakti hun. Kya karna hai?',
-  );
+  return result;
 }

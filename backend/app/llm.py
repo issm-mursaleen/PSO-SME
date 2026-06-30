@@ -11,10 +11,12 @@ state changes happen in workflows.py, never in the model.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
 from . import config, usage, workflows
+from .intents_generated import INTENTS, VOCAB, FALLBACK_TEXT, INTENT_SPEC_HASH
 from .schemas import (
     AddCustomerIn,
     ChatAction,
@@ -201,27 +203,21 @@ def _plan_with_llm(payload: PlanIn) -> PlanOut:
         ]
         for c in calls:
             _log_tool_call(c.name, c.args)
-        return PlanOut(tool_calls=calls, source="llm")
-    return PlanOut(tool_calls=[], final_text=choice.content or "Ji, batayein main kaise madad karun?", source="llm")
+        return PlanOut(tool_calls=calls, source="llm", intent_spec_hash=INTENT_SPEC_HASH)
+    return PlanOut(
+        tool_calls=[],
+        final_text=choice.content or "Ji, batayein main kaise madad karun?",
+        source="llm",
+        intent_spec_hash=INTENT_SPEC_HASH,
+    )
 
 
-# TEMP DEBUG LOGGING — verifying the customer-ranking routing fix; remove
-# once confirmed query_data(top_by_sales) no longer fires for ranking/top-N
-# customer requests.
+# Dev-only planner trace. Enable with ALARA_TRACE=1 in the environment; off by
+# default so production logs stay quiet. Mirrors the frontend planner trace.
 def _log_tool_call(name: str, args: dict[str, Any]) -> None:
-    if name not in ("show_visualization", "query_data"):
+    if os.getenv("ALARA_TRACE") not in ("1", "true", "True"):
         return
-    kind = args.get("kind")
-    renderer = (
-        ("TopCustomersVisualization" if kind == "top_customers" else "VisualizationCard")
-        if name == "show_visualization"
-        else "MostBusinessCard(legacy)"
-    )
-    print(
-        f"[alara:plan] tool={name} kind={kind} limit={args.get('limit')} "
-        f"scope={args.get('scope')} ranking_metric={args.get('ranking_metric')} "
-        f"template={args.get('template')} renderer={renderer}"
-    )
+    print(f"[alara:plan] tool={name} args={args}")
 
 
 # ── Offline fallback planner (no API key) — mirrors the frontend localPlan ────
@@ -339,166 +335,316 @@ def _customer_ranking_args(low: str, period_args: dict[str, Any]) -> dict[str, A
     }
 
 
-def _plan_fallback(message: str) -> PlanOut:
+# ── Spec-driven planner (single source of truth: shared/alara-intents.json) ───
+# A generic interpreter over the generated intent spec, mirroring the frontend
+# planner.ts exactly so the two CANNOT diverge (the parity test enforces it).
+# Matching is declarative; a few branching intents name a handler whose logic is
+# native but whose vocabulary still comes from the spec (VOCAB / intent fields).
+# NOTE: /api/plan tool calls are executed by the FRONTEND, so this planner must
+# emit byte-identical tool calls to planner.ts — including computed group_by
+# (no named presets) and the customer-ranking/visualization scan.
+_SORTED_INTENTS = sorted(INTENTS, key=lambda i: -i["priority"])
+
+
+def _spec_parse_period(low: str) -> dict[str, Any]:
+    m = re.search(
+        r"(?:pichle|last|past)?\s*(\d+)\s*"
+        r"(din|dino|days?|hafte|hafton|weeks?|maheene|mahine|months?|saal|years?)",
+        low,
+    )
+    if not m:
+        return {}
+    value = int(m.group(1))
+    raw = m.group(2).lower()
+    if re.search(r"din|day", raw):
+        unit = "days"
+    elif re.search(r"hafte|hafton|week", raw):
+        unit = "weeks"
+    elif re.search(r"maheene|mahine|month", raw):
+        unit = "months"
+    else:
+        unit = "years"
+    if unit == "days":
+        gb = "day"
+    elif unit == "weeks":
+        gb = "day" if value <= 4 else "week"
+    elif unit == "months":
+        gb = "week" if value <= 2 else "month"
+    else:
+        gb = "month"
+    return {"period_value": value, "period_unit": unit, "group_by": gb}
+
+
+def _spec_amount(low: str):
+    m = re.search(r"\d[\d,]*", low)
+    if not m:
+        return None
+    try:
+        n = float(m.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    return int(n) if n.is_integer() else n
+
+
+def _spec_name_before(text: str, stop: str):
+    m = re.match(r"^\s*([A-Za-z][A-Za-z\s]+?)\s+(?:%s)\b" % stop, text, re.I)
+    return m.group(1).strip() if m else None
+
+
+def _spec_idle_days(low: str) -> int:
+    m = re.search(r"(\d+)\s*(din|day)", low)
+    return int(m.group(1)) if m else 7
+
+
+def _spec_invoice_id(text: str):
+    m = re.search(r"\bINV-[\w-]+", text, re.I)
+    return m.group(0).upper() if m else None
+
+
+def _make_spec_ctx(message: str) -> dict[str, Any]:
     text = message.strip()
     low = text.lower()
-    amt = _parse_amount(low)
-    period_args = _parse_period(low)
+    return {
+        "text": text,
+        "low": low,
+        "period_args": _spec_parse_period(low),
+        "nameBefore": lambda stop: _spec_name_before(text, stop),
+        "amount": lambda: _spec_amount(low),
+        "idleDays": lambda: _spec_idle_days(low),
+        "invoiceId": lambda: _spec_invoice_id(text),
+    }
 
-    def call(name: str, args: dict[str, Any]) -> PlanOut:
-        _log_tool_call(name, args)
-        return PlanOut(tool_calls=[ToolCallOut(name=name, args=args)], source="fallback")
 
-    if re.search(r"\b(liya|le liya|saman|kharid|bika|sale|becha)\b", low) and amt:
-        cust = _name_before(text, r"ne|ka|ki")
-        if cust:
-            return call("record_sale", {"customer": cust, "amount": amt})
+def _spec_extract(espec: dict, ctx: dict):
+    ex = espec["extractor"]
+    if ex == "nameBefore":
+        return ctx["nameBefore"](espec.get("stop", ""))
+    if ex == "amount":
+        return ctx["amount"]()
+    if ex == "idleDays":
+        return ctx["idleDays"]()
+    if ex == "invoiceId":
+        return ctx["invoiceId"]()
+    return None
 
-    m = re.search(r"(naya customer|add customer|new customer)\s*[—\-:]?\s*(.+)", low)
-    if m:
-        parts = [p.strip() for p in re.split(r"[,—\-]", text[m.start(2):]) if p.strip()]
-        if parts:
-            ctype = "Hotel / Restaurant" if "hotel" in low else "Household"
-            return call("add_customer", {"name": parts[0].title(),
-                                         "area": parts[1] if len(parts) > 1 else None, "type": ctype})
 
-    # Invoice: "Tariq Hotel ka bill — 50L doodh @ 200, 10kg cheeni @ 300".
-    if re.search(r"\b(bill|invoice)\b", low):
-        cm = re.match(r"\s*(.+?)\s+(?:ka|ki)\s+(?:bill|invoice)", text, re.I)
-        customer = cm.group(1).strip() if cm else None
-        items = [
-            {"name": mm.group(2).strip(), "qty": float(mm.group(1)), "rate": float(mm.group(3))}
-            for mm in re.finditer(r"(\d+(?:\.\d+)?)\s*[a-zA-Z]*\s+([A-Za-z][A-Za-z\s]*?)\s*@\s*(\d+(?:\.\d+)?)", text)
-        ]
-        if customer and items:
-            return call("create_invoice", {"customer": customer, "items": items})
-        if customer:
-            return PlanOut(
-                tool_calls=[],
-                final_text=f'{customer} ka bill banane ke liye har item ka rate bhi likhein, e.g. "50 doodh @ 200".',
-                source="fallback",
-            )
+def _spec_resolved(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return len(value) > 0
+    return True
 
-    # Bulk outreach FIRST so "inactive walon ko message" doesn't grab a name.
-    if re.search(r"(sab|bulk|inactive|lapsed|purane|walon)", low) and \
-            re.search(r"(reminder|message|bhej|yaad|offer|outreach)", low):
-        return call("bulk_remind", {"filter": "inactive"})
 
-    # Single reminder/outreach: "X ko message likhdo / reminder / yaad dilao / outreach karo".
-    if re.search(r"(message|msg|reminder|remind|yaad dila|likh ?do|likho|draft|outreach)", low):
-        cust = _name_before(text, r"ko|ka|ki|ke")
-        if cust:
-            return call("draft_reminder", {"customer": cust})
+def _spec_match(intent: dict, ctx: dict) -> bool:
+    low = ctx["low"]
+    for p in intent["positive"]:
+        if not re.search(p, low):
+            return False
+    for n in intent["negative"]:
+        if re.search(n, low):
+            return False
+    for name in intent["requires"]:
+        espec = intent["entities"].get(name)
+        if not espec or not _spec_resolved(_spec_extract(espec, ctx)):
+            return False
+    return True
 
-    # Visit / recency for ONE customer.
-    if re.search(r"(kab aa\w*|last time|aakhri baar|kitne din|visit kab|kab aya)", low):
-        cust = _name_before(text, r"last|kab|kitne|aakhri|ka|ki|ko|ne")
-        if cust:
-            return call("customer_visit", {"customer": cust})
-    # "Which customers haven't come in the last N days" → inactive list.
-    if re.search(r"(nahi aa\w*|nahin aa\w*|inactive|gayab)", low) and \
-            re.search(r"(din|days|customer|grahak|kaun|konsi|konse)", low):
-        dm = re.search(r"(\d+)\s*(din|day)", low)
-        idle = int(dm.group(1)) if dm else 7
-        return call("list_customers", {"filter": "inactive", "idle_days": idle})
 
-    # Supplier operations, including phrases that do not literally say "supplier".
-    if re.search(r"(supplier|purchase|purchases|payable|outstanding|overdue|payment|receive hui)", low):
-        supplier = _name_before(text, r"ki|ka|ke|se|supplier")
-        supplier_arg = {"supplier": supplier} if supplier else {}
-        if period_args and re.search(r"(purchase|purchases)", low):
-            return call(
-                "show_visualization",
-                {
-                    "kind": "supplier_purchase_trend",
-                    "chartType": "bar" if re.search(r"(compare|comparison)", low) else "area",
-                    **period_args,
-                },
-            )
-        if re.search(r"(csv|excel|xlsx?|spreadsheet|sheet|export|download)", low):
-            dataset = "supplier_purchase_items" if re.search(r"(item|line)", low) else \
-                "suppliers" if re.search(r"(directory|list|contact)", low) else "supplier_invoices"
-            return call("export_supplier_csv", {"dataset": dataset, **supplier_arg})
-        if re.search(r"(payable|outstanding|overdue|due|payment|pending)", low):
-            status = "overdue" if "overdue" in low else \
-                "due_soon" if "due" in low else \
-                "paid" if "paid" in low else \
-                "pending" if re.search(r"(pending|outstanding)", low) else "all"
-            return call("supplier_payables", {"status": status, **supplier_arg})
-        if re.search(r"(invoice|bill|draft|generate|banao|banado|receive hui)", low):
-            return call("draft_supplier_invoice", supplier_arg)
-        if re.search(r"(analysis|trend|rank|compare|contribution|history|purchase|purchases)", low):
-            return call("supplier_purchase_analysis", supplier_arg)
-        if re.search(r"(list|sab|all|directory|kitne)", low):
-            return call("list_suppliers", {})
-        if supplier:
-            return call("get_supplier", {"supplier": supplier})
-        return call("list_suppliers", {})
+def _spec_build_simple(intent: dict, ctx: dict) -> list[ToolCallOut]:
+    args = dict(intent["args"])
+    for key, espec in intent["entities"].items():
+        val = _spec_extract(espec, ctx)
+        if _spec_resolved(val):
+            args[key] = val
+    return [ToolCallOut(name=intent["tool"], args=args)]
 
-    # High-priority customer-ranking intent — checked before generic
-    # time-period analytics, generic visualization, and query_data.
-    if _is_customer_ranking_request(low):
-        return call("show_visualization", _customer_ranking_args(low, period_args))
 
-    has_time_period = bool(period_args)
-    has_analytics_subject = bool(re.search(r"(sale|sales|revenue|purchase|purchases|customer|inventory|stock)", low))
-    if has_time_period and has_analytics_subject:
-        return call(
-            "show_visualization",
-            {
-                "kind": "supplier_purchase_trend" if re.search(r"(purchase|purchases)", low) else "sales_trend",
-                "chartType": "bar" if re.search(r"(compare|comparison)", low) else "area",
-                **period_args,
-            },
-        )
+# ── Branching handlers (logic native, vocabulary from the spec) ──────────────
+def _h_add_customer(_intent, ctx):
+    text = ctx["text"]
+    rest = re.split(r"[—\-:]", text)
+    rest = " ".join(rest[1:]).strip() or text
+    parts = [p.strip() for p in rest.split(",") if p.strip()]
+    if parts:
+        return ([ToolCallOut(name="add_customer", args={"name": parts[0], "area": parts[1] if len(parts) > 1 else None})], None)
+    return None
 
-    # Dynamic visualization cards: charts/graphs with explanations + suggested actions.
-    # Keep this in backend fallback because /api/plan can return fallback successfully,
-    # which means the frontend's local fallback is not used.
-    if re.search(
-        r"(visual|visualization|chart|graph|dashboard|breakdown|trend|compare|comparison|split|percentage|share|progress|target|goal)",
-        low,
-    ):
-        if re.search(r"(progress|target|goal)", low) and re.search(r"(inventory|stock|sku|reorder|low)", low):
-            return call("show_visualization", {"kind": "reorder_progress", **period_args})
-        if re.search(r"(split|percentage|share)", low) and re.search(r"(customer|grahak|client|type|segment)", low):
-            return call("show_visualization", {"kind": "customer_type_split", **period_args})
-        if re.search(r"(inventory|stock|sku|reorder|low)", low):
-            return call("show_visualization", {"kind": "inventory_risk", **period_args})
-        if re.search(r"(product|item|sku|mix)", low):
-            return call("show_visualization", {"kind": "product_mix", **period_args})
-        if re.search(r"(customer|grahak|client|top|best)", low):
-            return call("show_visualization", {"kind": "top_customers", **period_args})
-        return call(
-            "show_visualization",
-            {
-                "kind": "supplier_purchase_trend" if re.search(r"(purchase|purchases)", low) else "sales_trend",
-                "chartType": "area",
-                **period_args,
-            },
-        )
 
-    if re.search(r"(ab kya|next step|what next|kya karu|suggest|suggestion|recommend|advice|mashwara)", low):
-        cust = _name_before(text, r"ke|ka|ki|ko|for")
-        return call("suggest_next_steps", {"customer": cust} if cust else {})
-    if re.search(r"(sab se zyada|sabse zyada|most|best|top).*(business|sale|customer|grahak)|business.*(zyada|most)", low):
-        return call("query_data", {"template": "top_by_sales"})
-    if re.search(r"(business|performance|profile|kaisa|kaisi|analysis|insight|360)", low):
-        cust = _name_before(text, r"ka|ki|ke|kaisa|kaisi")
-        if cust:
-            return call("customer_insight", {"customer": cust})
-    if "sales today" in low or ("aaj" in low and "sale" in low):
-        return call("query_data", {"template": "sales_today"})
-    if low.startswith("open ") or "kholo" in low or "khol" in low:
-        page = re.sub(r"open |kholo|khol", "", low).strip()
-        return call("navigate", {"page": page})
+def _num(raw: str):
+    # Match JS Number(): whole values are ints (50, not 50.0) so the FE and BE
+    # planners emit byte-identical args (parity).
+    n = float(raw)
+    return int(n) if n.is_integer() else n
 
-    return PlanOut(
-        tool_calls=[],
-        final_text=("Ji, main sale likh sakti hun, customer add/update kar sakti hun, "
-                    "invoice bana sakti hun, outreach message bhej sakti hun, ya koi page khol sakti hun. Kya karna hai?"),
-        source="fallback",
-    )
+
+def _h_create_invoice(_intent, ctx):
+    text = ctx["text"]
+    cm = re.match(r"^\s*(.+?)\s+(?:ka|ki)\s+(?:bill|invoice)", text, re.I)
+    customer = cm.group(1).strip() if cm else None
+    items = [
+        {"name": mm.group(2).strip(), "qty": _num(mm.group(1)), "rate": _num(mm.group(3))}
+        for mm in re.finditer(r"(\d+(?:\.\d+)?)\s*[a-zA-Z]*\s+([a-zA-Z][a-zA-Z\s]*?)\s*@\s*(\d+(?:\.\d+)?)", text)
+    ]
+    if customer and items:
+        return ([ToolCallOut(name="create_invoice", args={"customer": customer, "items": items})], None)
+    if customer:
+        return ([], f'{customer} ka bill banane ke liye har item ka rate bhi likhein, e.g. "50 doodh @ 200, 10 cheeni @ 300".')
+    return None
+
+
+def _payable_status(low: str) -> str:
+    if "overdue" in low:
+        return "overdue"
+    if "due" in low:
+        return "due_soon"
+    if "paid" in low:
+        return "paid"
+    if re.search(r"pending|outstanding", low):
+        return "pending"
+    return "all"
+
+
+def _h_supplier_ops(_intent, ctx):
+    low = ctx["low"]
+    period = ctx["period_args"]
+    s = ctx["nameBefore"]("ki|ka|ke|se")
+    sup = {"supplier": s} if s else {}
+    if period and re.search(r"(purchase|purchases)", low):
+        chart = "bar" if re.search(VOCAB["comparison"], low) else "area"
+        return ([ToolCallOut(name="show_visualization", args={"kind": "supplier_purchase_trend", "chartType": chart, **period})], None)
+    if re.search(VOCAB["csvExport"], low):
+        return ([ToolCallOut(name="export_supplier_csv", args={"dataset": "supplier_invoices", **sup})], None)
+    if re.search(r"(payable|outstanding|overdue|due|payment|pending)", low):
+        return ([ToolCallOut(name="supplier_payables", args={"status": _payable_status(low), **sup})], None)
+    if re.search(r"(invoice|bill|draft|generate|banao|banado|receive hui)", low):
+        return ([ToolCallOut(name="draft_supplier_invoice", args={**sup})], None)
+    return ([ToolCallOut(name="supplier_purchase_analysis", args={**sup})], None)
+
+
+def _h_supplier_directory(_intent, ctx):
+    low = ctx["low"]
+    s = ctx["nameBefore"]("se|ka|ki|supplier|ke")
+    sup = {"supplier": s} if s else {}
+    if re.search(VOCAB["csvExport"], low):
+        if re.search(VOCAB["supplierItems"], low):
+            dataset = "supplier_purchase_items"
+        elif re.search(VOCAB["supplierDirectoryWords"], low):
+            dataset = "suppliers"
+        else:
+            dataset = "supplier_invoices"
+        return ([ToolCallOut(name="export_supplier_csv", args={"dataset": dataset, **sup})], None)
+    if re.search(VOCAB["payableTrigger"], low):
+        return ([ToolCallOut(name="supplier_payables", args={"status": _payable_status(low), **sup})], None)
+    if re.search(r"(purchase|purchases|analysis|trend|rank|compare|contribution|history)", low):
+        return ([ToolCallOut(name="supplier_purchase_analysis", args={**sup})], None)
+    if re.search(r"(invoice|bill|draft|generate|banao|banado)", low):
+        return ([ToolCallOut(name="draft_supplier_invoice", args={**sup})], None)
+    if re.search(r"(list|sab|all|directory|kitne)", low):
+        return ([ToolCallOut(name="list_suppliers", args={})], None)
+    if s:
+        return ([ToolCallOut(name="get_supplier", args={"supplier": s})], None)
+    return ([ToolCallOut(name="list_suppliers", args={})], None)
+
+
+def _h_list_inventory(_intent, ctx):
+    low = ctx["low"]
+    filt = "out_of_stock" if re.search(r"out of stock|khatam", low) else "low_stock"
+    return ([ToolCallOut(name="list_inventory", args={"filter": filt})], None)
+
+
+def _h_viz_scan(intent, ctx):
+    low = ctx["low"]
+    period = ctx["period_args"]
+    triggers = (intent.get("metric") or {}).get("invoiceCountTriggers", "(invoice_count)")
+    top_limit = re.search(r"\b(?:top|best)\s*(\d+)\b", low) or re.search(r"\brank(?:ed|ing)?\s+(?:my\s+)?(?:top\s*)?(\d+)\b", low)
+    plural = bool(re.search(r"\b(customers|grahak\w*|clients)\b", low))
+    singular = bool(re.search(r"\bcustomer\b", low)) and not plural
+    explicit = bool(top_limit) or bool(re.search(r"(rank|ranking|ranked|highest|sab\s*se\s*zyada|sabse\s*zyada)", low)) or bool(re.search(r"(chart|graph|visual|dikhao|report|\blist\b|compare|comparison)", low))
+    is_top = plural or (singular and explicit)
+
+    matches = []
+
+    def push(kind, pattern):
+        m = re.search(pattern, low)
+        if m:
+            matches.append((kind, m.start()))
+
+    push("reorder_progress", r"(reorder progress|stock vs reorder)")
+    push("inventory_risk", r"(inventory risk|low stock|stock risk|reorder level)")
+    push("customer_type_split", r"(customer.type|type split|segment split|customer split)")
+    push("product_mix", r"(product mix|item mix)")
+    push("supplier_purchase_trend", r"(supplier purchase|supplier purchases)")
+    if is_top:
+        m = re.search(r"top|best|rank|highest|customer", low)
+        matches.append(("top_customers", m.start() if m else 0))
+    push("sales_trend", r"(sales\s*trend|\bsales\b|\bsale\b)")
+
+    matches.sort(key=lambda x: x[1])
+    ordered = []
+    for kind, _ in matches:
+        if kind not in ordered:
+            ordered.append(kind)
+    if not ordered:
+        return None
+
+    calls = []
+    for kind in ordered[:6]:
+        args = {"kind": kind, **period}
+        if kind == "top_customers":
+            args["chartType"] = "bar"
+            limit = int(top_limit.group(1)) if top_limit else (1 if singular else None)
+            if limit is not None:
+                args["limit"] = limit
+            args["ranking_metric"] = "invoice_count" if re.search(triggers, low) else "revenue"
+            args["scope"] = "selected_period" if period else "lifetime"
+        elif kind in ("sales_trend", "supplier_purchase_trend") and re.search(VOCAB["comparison"], low):
+            args["chartType"] = "bar"
+        calls.append(ToolCallOut(name="show_visualization", args=args))
+    return (calls, None)
+
+
+def _h_navigate_open(_intent, ctx):
+    page = re.sub(r"open |kholo|khol", "", ctx["low"]).strip()
+    return ([ToolCallOut(name="navigate", args={"page": page})], None)
+
+
+_SPEC_HANDLERS = {
+    "addCustomer": _h_add_customer,
+    "createInvoice": _h_create_invoice,
+    "supplierOps": _h_supplier_ops,
+    "supplierDirectory": _h_supplier_directory,
+    "listInventory": _h_list_inventory,
+    "vizScan": _h_viz_scan,
+    "navigateOpen": _h_navigate_open,
+}
+
+
+def _plan_from_spec(message: str) -> PlanOut:
+    ctx = _make_spec_ctx(message)
+    for intent in _SORTED_INTENTS:
+        if not _spec_match(intent, ctx):
+            continue
+        if intent.get("handler"):
+            out = _SPEC_HANDLERS[intent["handler"]](intent, ctx)
+            if out is None:
+                continue
+            calls, final_text = out
+            for c in calls:
+                _log_tool_call(c.name, c.args)
+            return PlanOut(tool_calls=calls, final_text=final_text, source="fallback", intent_spec_hash=INTENT_SPEC_HASH)
+        calls = _spec_build_simple(intent, ctx)
+        for c in calls:
+            _log_tool_call(c.name, c.args)
+        return PlanOut(tool_calls=calls, source="fallback", intent_spec_hash=INTENT_SPEC_HASH)
+
+    return PlanOut(tool_calls=[], final_text=FALLBACK_TEXT, source="fallback", intent_spec_hash=INTENT_SPEC_HASH)
+
+
+def _plan_fallback(message: str) -> PlanOut:
+    # Thin wrapper around the spec-driven interpreter (kept as a named entry
+    # point because plan() and tests call it).
+    return _plan_from_spec(message)
 
 SYSTEM_PROMPT = (
     "You are Alara, a Roman-Urdu/English assistant for a Pakistani shopkeeper's "
