@@ -1,7 +1,7 @@
 """PSO SME backend — a lean shared API for the deterministic workflows and the
 OpenAI-powered chat. Inspired by the c360 chat idea, without the over-engineering.
 
-Run:  uvicorn app.main:app --reload --port 8000
+Run:  uvicorn app.main:app --reload --port 8001
 """
 from __future__ import annotations
 

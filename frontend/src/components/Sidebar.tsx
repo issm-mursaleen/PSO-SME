@@ -35,7 +35,7 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
     title: 'Core Workspace',
     items: [
       { name: 'Alara Chat AI', icon: Bot, href: '/chat' },
-      { name: 'Today Dashboard', icon: LayoutDashboard, href: '/' },
+      { name: 'Today Dashboard', icon: LayoutDashboard, href: '/dashboard' },
       { name: 'Record Sale', icon: ShoppingCart, href: '/record-sale' },
       { name: 'Invoices List', icon: ReceiptText, href: '/invoices' },
       { name: 'Inventory & Suppliers', icon: Package, href: '/inventory' },

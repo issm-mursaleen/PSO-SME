@@ -28,6 +28,37 @@ const WELCOME: AlaraChatMessage = {
     'invoice banayein, reminders bhejein, ya koi bhi page kholne ko kahein.',
 };
 
+type ChatCache = { threads?: ChatThread[]; activeChatId?: string };
+
+function parseChatCache(raw: string | null): ChatCache | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as ChatCache;
+    return Array.isArray(parsed.threads) && parsed.threads.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function chatCacheScore(cache: ChatCache | null): number {
+  if (!cache?.threads?.length) return 0;
+  let userMessages = 0;
+  let totalMessages = 0;
+  for (const thread of cache.threads) {
+    const messages = Array.isArray(thread.messages) ? thread.messages : [];
+    totalMessages += messages.length;
+    userMessages += messages.filter((m) => m.sender === 'user').length;
+  }
+  return userMessages * 1000 + totalMessages * 10 + cache.threads.length;
+}
+
+function bestChatCache(...caches: (ChatCache | null)[]): ChatCache | null {
+  return caches.reduce<ChatCache | null>(
+    (best, cache) => (chatCacheScore(cache) > chatCacheScore(best) ? cache : best),
+    null,
+  );
+}
+
 export function useAlaraChat() {
   const app = useApp();
   const router = useRouter();
@@ -73,10 +104,8 @@ export function useAlaraChat() {
   // store (not derivable during SSR), so setState in these effects is intended.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    const hydrate = (raw: string | null) => {
-      if (!raw) return false;
-      const cached = JSON.parse(raw) as { threads?: ChatThread[]; activeChatId?: string };
-      if (!Array.isArray(cached.threads) || cached.threads.length === 0) return false;
+    const hydrate = (cached: ChatCache | null) => {
+      if (!cached?.threads?.length) return false;
       const activeId =
         cached.activeChatId && cached.threads.some((t) => t.id === cached.activeChatId)
           ? cached.activeChatId
@@ -89,11 +118,13 @@ export function useAlaraChat() {
     };
 
     try {
-      const raw = window.localStorage.getItem(CHAT_CACHE_KEY);
-      if (!hydrate(raw)) hydrate(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY));
+      const primary = parseChatCache(window.localStorage.getItem(CHAT_CACHE_KEY));
+      const backup = parseChatCache(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY));
+      const restored = bestChatCache(primary, backup);
+      hydrate(restored);
     } catch {
       try {
-        hydrate(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY));
+        hydrate(parseChatCache(window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY)));
       } catch {
         /* ignore corrupt cache */
       }
@@ -121,9 +152,14 @@ export function useAlaraChat() {
 
   useEffect(() => {
     if (!cacheReady) return;
-    const nextCache = JSON.stringify({ threads: chatThreads, activeChatId });
+    const nextCacheObject: ChatCache = { threads: chatThreads, activeChatId };
+    const nextCache = JSON.stringify(nextCacheObject);
     const previousCache = window.localStorage.getItem(CHAT_CACHE_KEY);
-    if (previousCache && previousCache !== nextCache) {
+    const backupCache = window.localStorage.getItem(CHAT_CACHE_BACKUP_KEY);
+    const bestBackup = bestChatCache(parseChatCache(backupCache), parseChatCache(previousCache));
+    if (bestBackup && chatCacheScore(bestBackup) > chatCacheScore(nextCacheObject)) {
+      window.localStorage.setItem(CHAT_CACHE_BACKUP_KEY, JSON.stringify(bestBackup));
+    } else if (previousCache && previousCache !== nextCache && chatCacheScore(parseChatCache(previousCache)) > 0) {
       window.localStorage.setItem(CHAT_CACHE_BACKUP_KEY, previousCache);
     }
     window.localStorage.setItem(CHAT_CACHE_KEY, nextCache);
@@ -148,12 +184,14 @@ export function useAlaraChat() {
     readData: unknown[];
     halted: boolean;
     lastCardType?: string;
-    contextCustomerName?: string;
+    lastCardData?: Record<string, unknown>;
+    lastToolCall?: ToolCall;
   } => {
     const readData: unknown[] = [];
     let halted = false;
     let lastCardType: string | undefined;
-    let contextCustomerName: string | undefined;
+    let lastCardData: Record<string, unknown> | undefined;
+    let lastToolCall: ToolCall | undefined;
     const vizBuffer: { kind: string; outcome: ReturnType<typeof runToolCall> }[] = [];
     const successfulVizCalls: ToolCall[] = [];
 
@@ -171,6 +209,7 @@ export function useAlaraChat() {
           status: outcome.status,
         });
         lastCardType = outcome.cardType;
+        lastCardData = outcome.cardData;
       } else {
         const tabs = vizBuffer.map(({ kind, outcome }) => {
           const meta = VIZ_KIND_META[kind] ?? { label: 'Chart', icon: 'BarChart3' };
@@ -255,8 +294,8 @@ export function useAlaraChat() {
         status: outcome.status,
       });
       lastCardType = outcome.cardType;
-      const cardCustomerName = outcome.cardData?.customer_name;
-      if (typeof cardCustomerName === 'string' && cardCustomerName) contextCustomerName = cardCustomerName;
+      lastCardData = outcome.cardData;
+      lastToolCall = call as ToolCall;
       if (outcome.navigateTo) ctxRef.current.navigate(outcome.navigateTo);
       if (outcome.pending) halted = true; // awaiting confirmation
       else if (outcome.data) readData.push({ tool: call.name, ...outcome.data });
@@ -264,20 +303,61 @@ export function useAlaraChat() {
     }
     flushViz();
     if (successfulVizCalls.length) lastVisualizationCallsRef.current = successfulVizCalls;
-    return { readData, halted, lastCardType, contextCustomerName };
+    return { readData, halted, lastCardType, lastCardData, lastToolCall };
   }, [append]);
 
-  /** Appends a "Suggested next steps" card after a turn completes — unless
-   *  the turn is awaiting confirmation/disambiguation, or already ended on
-   *  one (avoids back-to-back duplicates). Tailored to the customer involved
-   *  in the just-finished turn when one is known, else shop-wide priorities. */
-  const appendNextSteps = useCallback((contextCustomerName?: string) => {
-    const outcome = runToolCall(
-      { name: 'suggest_next_steps', args: contextCustomerName ? { customer: contextCustomerName } : {} },
-      ctxRef.current,
-    );
-    if (outcome.cardType === 'next_steps') {
-      append({ id: uid(), sender: 'alara', text: outcome.text, cardType: outcome.cardType, cardData: outcome.cardData });
+  /** True when a card already carries its own connected next-action(s) —
+   *  visualizations/insights/get_supplier/get_product/top_customers all do.
+   *  Auto-suggesting on top of these would just be a second, disconnected
+   *  opinion, so we skip it entirely in that case. */
+  function hasOwnNextSteps(cardData?: Record<string, unknown>): boolean {
+    if (!cardData) return false;
+    const steps = cardData.steps;
+    if (Array.isArray(steps) && steps.length > 0) return true;
+    const insights = cardData.insights as { recommendedAction?: unknown } | undefined;
+    if (insights?.recommendedAction) return true;
+    // An invoice card already has its own Download / View-in-Invoices buttons.
+    if (cardData.invoice_id && cardData.document) return true;
+    return false;
+  }
+
+  /** A single, topic-relevant follow-up for the handful of read tools whose
+   *  card has no built-in steps and no customer in context — built from the
+   *  exact tool/args just used, never a generic shop-wide guess. */
+  function topicFollowup(lastToolCall?: ToolCall): { label: string; prompt: string; reason: string } | null {
+    if (lastToolCall?.name === 'query_data' && lastToolCall.args.template === 'sales_today') {
+      return { label: 'Sales trend dikhao', prompt: 'Sales trend dikhao', reason: 'Pichle dinon ka trend dekhein' };
+    }
+    return null;
+  }
+
+  /** Appends a "Suggested next steps" card after a turn completes — but only
+   *  when it's actually connected to what was just discussed: skipped if the
+   *  card already has its own next action, otherwise tailored to whichever
+   *  customer the turn was about, or to one topic-relevant follow-up for a
+   *  handful of known contextless tools. No generic shop-wide fallback —
+   *  better to suggest nothing than something unrelated. */
+  const appendNextSteps = useCallback((cardData?: Record<string, unknown>, lastToolCall?: ToolCall) => {
+    if (hasOwnNextSteps(cardData)) return;
+
+    const customerName = cardData?.customer_name;
+    if (typeof customerName === 'string' && customerName) {
+      const outcome = runToolCall({ name: 'suggest_next_steps', args: { customer: customerName } }, ctxRef.current);
+      if (outcome.cardType === 'next_steps') {
+        append({ id: uid(), sender: 'alara', text: outcome.text, cardType: outcome.cardType, cardData: outcome.cardData });
+      }
+      return;
+    }
+
+    const followup = topicFollowup(lastToolCall);
+    if (followup) {
+      append({
+        id: uid(),
+        sender: 'alara',
+        text: 'Aap shayad yeh dekhna chahein:',
+        cardType: 'next_steps',
+        cardData: { title: 'Suggested next step', steps: [{ ...followup, tone: 'normal' }] },
+      });
     }
   }, [append]);
 
@@ -343,22 +423,23 @@ export function useAlaraChat() {
 
         if (plan.tool_calls.length === 0) {
           append({ id: uid(), sender: 'alara', text: plan.final_text || 'Ji, batayein main kaise madad karun?' });
-          appendNextSteps();
+          // No tool ran, so there's no connected next step to offer — a plain
+          // conversational reply doesn't get a bolted-on suggestion.
         } else {
-          const { halted, lastCardType, contextCustomerName } = applyPlan(plan);
+          const { halted, lastCardType, lastCardData, lastToolCall } = applyPlan(plan);
           if (plan.final_text) append({ id: uid(), sender: 'alara', text: plan.final_text });
-          // Every turn ends with a next-best-action suggestion, unless the
-          // last card is already awaiting the user's confirmation/choice or
-          // is itself a next-steps card (no back-to-back duplicates).
+          // A next-best-action suggestion follows, but only when it's
+          // actually connected to what was just shown (see appendNextSteps) —
+          // and never while something is still awaiting confirmation/choice.
           if (!halted && lastCardType !== 'next_steps' && lastCardType !== 'disambiguation') {
-            appendNextSteps(contextCustomerName);
+            appendNextSteps(lastCardData, lastToolCall);
           }
         }
       } finally {
         setIsTyping(false);
       }
     },
-    [app.customers, app.suppliers, append, applyPlan, appendNextSteps, chatMessages],
+    [app.customers, app.suppliers, app.supplierInvoices, append, applyPlan, appendNextSteps, chatMessages],
   );
 
   // ── Card actions ─────────────────────────────────────────────────────────────
@@ -391,8 +472,7 @@ export function useAlaraChat() {
     });
     if (res.navigateTo) ctxRef.current.navigate(res.navigateTo);
     if (res.ok && res.cardType !== 'next_steps') {
-      const name = res.cardData?.customer_name;
-      appendNextSteps(typeof name === 'string' ? name : undefined);
+      appendNextSteps(res.cardData);
     }
   }, [chatMessages, append, appendNextSteps]);
 
@@ -409,7 +489,7 @@ export function useAlaraChat() {
       text: `Message Outreach tab mein bhej diya — ${String(msg.cardData?.recipientName ?? '')}. Connect page par dekh sakte hain.`,
     });
     const name = msg.cardData?.recipientName;
-    appendNextSteps(typeof name === 'string' ? name : undefined);
+    appendNextSteps(typeof name === 'string' ? { customer_name: name } : undefined);
   }, [append, chatMessages, appendNextSteps]);
 
   /** Pick a candidate from a disambiguation card and re-run the original tool. */
@@ -434,8 +514,7 @@ export function useAlaraChat() {
     });
     if (outcome.navigateTo) ctxRef.current.navigate(outcome.navigateTo);
     if (!outcome.pending && outcome.cardType !== 'disambiguation' && outcome.cardType !== 'next_steps') {
-      const name = outcome.cardData?.customer_name ?? candidate.name;
-      appendNextSteps(typeof name === 'string' ? name : undefined);
+      appendNextSteps(outcome.cardData ?? { customer_name: candidate.name }, call);
     }
   }, [append, chatMessages, appendNextSteps]);
 
@@ -654,7 +733,7 @@ function localPlan(message: string): PlanResponse {
     const s = nameBefore('ki|ka|ke|se');
     if (Object.keys(periodArgs).length > 0 && /(purchase|purchases)/.test(low))
       return fb([{ name: 'show_visualization', args: { kind: 'supplier_purchase_trend', chartType: /(compare|comparison)/.test(low) ? 'bar' : 'area', ...periodArgs } }]);
-    if (/(csv|export|download)/.test(low))
+    if (/(csv|excel|xlsx?|spreadsheet|sheet|export|download)/.test(low))
       return fb([{ name: 'export_supplier_csv', args: { dataset: 'supplier_invoices', ...(s ? { supplier: s } : {}) } }]);
     if (/(payable|outstanding|overdue|due|payment|pending)/.test(low)) {
       const status = /overdue/.test(low) ? 'overdue' : /due/.test(low) ? 'due_soon' : /paid/.test(low) ? 'paid' : /pending|outstanding/.test(low) ? 'pending' : 'all';
@@ -667,7 +746,7 @@ function localPlan(message: string): PlanResponse {
   // Supplier directory / one supplier's profile.
   if (/(supplier)/.test(low)) {
     const s = nameBefore('se|ka|ki|supplier|ke');
-    if (/(csv|export|download)/.test(low)) {
+    if (/(csv|excel|xlsx?|spreadsheet|sheet|export|download)/.test(low)) {
       const dataset = /(item|line)/.test(low) ? 'supplier_purchase_items' : /(directory|list|contact)/.test(low) ? 'suppliers' : 'supplier_invoices';
       return fb([{ name: 'export_supplier_csv', args: { dataset, ...(s ? { supplier: s } : {}) } }]);
     }

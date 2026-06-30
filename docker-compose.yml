@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8001:8001"
+    env_file:
+      # Optional: copy backend/.env.example -> backend/.env and fill in
+      # OPENAI_API_KEY to enable the LLM path. Without it the chat still
+      # works via the deterministic offline fallback parser.
+      - path: ./backend/.env
+        required: false
+    volumes:
+      # Usage counters survive container rebuilds/restarts.
+      - ./backend/app/usage_log.json:/app/app/usage_log.json
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Inlined into the browser bundle at build time — must be reachable
+        # from the host browser, not the Docker-internal service name.
+        NEXT_PUBLIC_API_URL: http://localhost:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped

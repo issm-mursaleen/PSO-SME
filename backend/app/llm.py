@@ -82,6 +82,10 @@ PLAN_SYSTEM_PROMPT = (
     "number of invoices/transactions, otherwise ranking_metric='revenue'. Set scope='lifetime' "
     "when no date range is given, or scope='selected_period' when one is. These tools "
     "return the figures, context and recommended actions — so do NOT invent numbers yourself.\n\n"
+    "OUTREACH — `draft_reminder`/`bulk_remind` auto-write a message personalized from the "
+    "customer's REAL buying pattern (their actual top product(s), a discount sized to how "
+    "lapsed they are) — never a generic 'khaas offers hain' line. Leave the `message` field "
+    "empty unless the user dictates the exact wording themselves.\n\n"
     "INVOICES — `create_invoice` generates a NEW itemised bill (the card shows a live preview "
     "and, once confirmed, Download + 'View in Invoices' actions). `get_invoice` shows a "
     "PREVIOUSLY generated invoice — by exact ID ('INV-4821 dikhao') or by customer for their "
@@ -101,8 +105,10 @@ PLAN_SYSTEM_PROMPT = (
     "filters, trends or unusual changes use `supplier_purchase_analysis`. For paid, pending, "
     "due-soon, overdue and outstanding balances use `supplier_payables`. For supplier invoice "
     "drafts use `draft_supplier_invoice`: it must show a full preview first and the app will only "
-    "create/post after explicit user confirmation. For CSV requests use `export_supplier_csv`; "
-    "show record count, selected columns, active filters and a 5-row preview before export. "
+    "create/post after explicit user confirmation. For CSV/Excel/spreadsheet/sheet export requests "
+    "(any of those words means the same thing here — the file is a CSV the user can open in Excel) "
+    "use `export_supplier_csv`; show record count, selected columns, active filters and a 5-row "
+    "preview before export. "
     "Do not invent suppliers, invoices, purchases or totals. Do not expose internal parameter names "
     "like dataset, sort or filter keys to the user; phrase them as plain business wording. "
     "Keep next actions to at most three.\n\n"
@@ -409,7 +415,7 @@ def _plan_fallback(message: str) -> PlanOut:
                     **period_args,
                 },
             )
-        if re.search(r"(csv|export|download)", low):
+        if re.search(r"(csv|excel|xlsx?|spreadsheet|sheet|export|download)", low):
             dataset = "supplier_purchase_items" if re.search(r"(item|line)", low) else \
                 "suppliers" if re.search(r"(directory|list|contact)", low) else "supplier_invoices"
             return call("export_supplier_csv", {"dataset": dataset, **supplier_arg})

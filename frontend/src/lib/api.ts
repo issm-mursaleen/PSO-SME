@@ -1,6 +1,6 @@
 // Frontend → backend client. Base URL mirrors the c360 convention.
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
 
 export interface ChatAction {
   workflow: string;

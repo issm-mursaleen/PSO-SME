@@ -125,6 +125,15 @@ export function UsagePanel() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch usage on mount
   useEffect(() => { load(); }, [load]);
 
+  // Self-heal: if the backend was down when this panel loaded, keep retrying
+  // in the background so it recovers on its own once the backend comes back,
+  // instead of staying stuck on "offline" until the user clicks Refresh.
+  useEffect(() => {
+    if (!offline) return;
+    const retry = setInterval(load, 8000);
+    return () => clearInterval(retry);
+  }, [offline, load]);
+
   const maxCost = data ? Math.max(...data.series.map((d) => safeNumber(d.cost)), 0.000001) : 1;
 
   return (
@@ -153,7 +162,7 @@ export function UsagePanel() {
                   <WifiOff className="size-3.5 shrink-0" /> Usage backend offline — last saved numbers dikha rahe hain.
                 </p>
                 <p className="mt-1 font-mono text-[10px] text-muted-foreground/80">
-                  Backend chalayein: <span className="text-foreground">cd backend &amp;&amp; uvicorn app.main:app --port 8000</span>
+                  Backend chalayein: <span className="text-foreground">cd backend &amp;&amp; uvicorn app.main:app --port 8001</span>
                 </p>
               </div>
             ) : !data.llm_enabled ? (

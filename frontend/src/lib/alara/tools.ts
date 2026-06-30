@@ -257,6 +257,7 @@ const getCustomer: AlaraTool = {
       cardType: 'metric',
       cardData: {
         title: customer.name,
+        customer_name: customer.name,
         stats: [
           { label: 'Lifetime Sales', value: pkr(lifetime) },
           { label: 'Last Visit', value: `${customer.lastVisitDays}d ago` },
@@ -1088,7 +1089,9 @@ const exportSupplierCsv: AlaraTool = {
   name: 'export_supplier_csv',
   tier: 'read',
   description:
-    'Prepare a CSV-ready supplier dataset using the exact filtered records currently shown: suppliers, supplier invoices, or supplier purchase line items. Show record count, columns, filters and 5-row preview before export.',
+    'Prepare a CSV-ready supplier dataset using the exact filtered records currently shown: suppliers, supplier invoices, or supplier purchase line items. ' +
+    'Use this for ANY "csv", "excel", "excel sheet", "spreadsheet" or "export/download" request about supplier data — they all mean the same downloadable file here. ' +
+    'Show record count, columns, filters and 5-row preview before export.',
   parameters: {
     type: 'object',
     properties: {
@@ -1224,7 +1227,8 @@ const exportCustomerRankingCsv: AlaraTool = {
   tier: 'read',
   description:
     'Export the top-customers-by-sales ranking shown by show_visualization (kind=top_customers) as a ' +
-    'downloadable CSV — same date range and limit, never lifetime sales.',
+    'downloadable CSV — same date range and limit, never lifetime sales. Use this for ANY "csv", ' +
+    '"excel", "excel sheet" or "spreadsheet" request for this ranking — they all mean the same file.',
   parameters: {
     type: 'object',
     properties: {
@@ -2566,10 +2570,60 @@ const recordStockIn: AlaraTool = {
 // ─────────────────────────────────────────────────────────────────────────────
 // COMMS TOOLS (draft → send)
 // ─────────────────────────────────────────────────────────────────────────────
-function buildReminder(c: Customer): string {
-  if (c.lastVisitDays >= 14)
-    return `Salam ${c.name}, kaafi arsa ho gaya aap tashreef nahi laaye. Aap ke liye khaas offers hain — zaroor aaiye! Shukriya — PSO SME.`;
-  return `Salam ${c.name}, umeed hai aap khairiyat se hain. Humare paas aaj kuch khaas offers hain — zaroor visit karein. Shukriya — PSO SME.`;
+interface ProductInsight {
+  name: string;
+  qty: number;
+  revenue: number;
+}
+
+/** This customer's real buying pattern — ranked by revenue from their actual
+ *  invoice line items, not a guess. Falls back to the seeded preferredProducts
+ *  hint only when they have no recorded invoices yet. */
+function topProductsFor(c: Customer, ctx: AlaraToolContext, limit = 2): ProductInsight[] {
+  const tally = new Map<string, { qty: number; revenue: number }>();
+  for (const inv of ctx.invoices) {
+    if (inv.customerId !== c.id) continue;
+    for (const it of inv.items) {
+      const current = tally.get(it.name) ?? { qty: 0, revenue: 0 };
+      current.qty += it.quantity;
+      current.revenue += it.total;
+      tally.set(it.name, current);
+    }
+  }
+  if (tally.size > 0) {
+    return Array.from(tally.entries())
+      .map(([name, v]) => ({ name, ...v }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, limit);
+  }
+  return (c.preferredProducts ?? []).slice(0, limit).map((p) => ({ name: p.name, qty: 0, revenue: 0 }));
+}
+
+/** Outreach message built from this customer's actual buying pattern — names
+ *  their real top product(s) and a discount sized to how lapsed they are
+ *  (more lapsed → bigger incentive to come back), instead of a generic
+ *  "khaas offers hain" line with no connection to what they actually buy. */
+function buildReminder(c: Customer, ctx: AlaraToolContext): string {
+  const top = topProductsFor(c, ctx, 2);
+  const productLine = top.length === 0 ? null : top.length === 1 ? top[0].name : `${top[0].name} aur ${top[1].name}`;
+
+  const lapsed = c.lastVisitDays >= 14;
+  const cooling = !lapsed && c.lastVisitDays >= 7;
+  const discountPct = lapsed ? 15 : cooling ? 10 : 5;
+
+  if (lapsed) {
+    return productLine
+      ? `Salam ${c.name}, kaafi arsa ho gaya aap tashreef nahi laaye. Aap ${productLine} pasand karte hain — is hafte inpar ${discountPct}% off hai. Zaroor aaiye! Shukriya — PSO SME.`
+      : `Salam ${c.name}, kaafi arsa ho gaya aap tashreef nahi laaye. Aap ke liye ${discountPct}% ka khaas offer hai — zaroor aaiye! Shukriya — PSO SME.`;
+  }
+  if (cooling) {
+    return productLine
+      ? `Salam ${c.name}, umeed hai khairiyat se hain. Aap ${productLine} lete rehte hain — abhi inpar ${discountPct}% off chal raha hai. Zaroor visit karein! Shukriya — PSO SME.`
+      : `Salam ${c.name}, umeed hai khairiyat se hain. Humare paas ${discountPct}% ka offer hai — zaroor visit karein. Shukriya — PSO SME.`;
+  }
+  return productLine
+    ? `Salam ${c.name}, aap ke pasandeeda ${productLine} par aaj ${discountPct}% off hai — zaroor visit karein! Shukriya — PSO SME.`
+    : `Salam ${c.name}, umeed hai aap khairiyat se hain. Humare paas aaj ${discountPct}% ka offer hai — zaroor visit karein. Shukriya — PSO SME.`;
 }
 
 const draftReminder: AlaraTool = {
@@ -2577,7 +2631,11 @@ const draftReminder: AlaraTool = {
   tier: 'comms',
   description:
     'Draft a WhatsApp/SMS outreach message for one customer (check-in, win-back, offer). ' +
-    'Shows a preview the user sends manually. Provide `message` to override the auto-generated text.',
+    'When `message` is omitted, the auto-generated text is personalized from that customer\'s ' +
+    'REAL buying pattern (their actual top product(s) by revenue from invoice history, or the ' +
+    'seeded preference if they have no invoices yet) plus a discount sized to how lapsed they ' +
+    'are — never a generic "khaas offers hain" line. Only provide `message` yourself when the ' +
+    'user dictates the exact wording.',
   parameters: {
     type: 'object',
     properties: {
@@ -2591,7 +2649,7 @@ const draftReminder: AlaraTool = {
     const { customer, candidates } = resolveCustomer(String(args.customer ?? ''), ctx.customers);
     if (candidates) return disambiguation('draft_reminder', args, String(args.customer ?? ''), candidates);
     if (!customer) return err(`Customer "${args.customer}" nahi mila.`, 'customer_not_found');
-    const message = String(args.message ?? '') || buildReminder(customer);
+    const message = String(args.message ?? '') || buildReminder(customer, ctx);
     return {
       ok: true,
       text: `${customer.name} ke liye outreach draft tayyar hai.`,
@@ -2609,7 +2667,7 @@ const draftReminder: AlaraTool = {
   commit: (args, ctx) => {
     const { customer } = resolveCustomer(String(args.customer ?? ''), ctx.customers);
     if (!customer) return err('Customer nahi mila.', 'customer_not_found');
-    const message = String(args.message ?? '') || buildReminder(customer);
+    const message = String(args.message ?? '') || buildReminder(customer, ctx);
     ctx.sendWhatsAppReminder(customer.id, message, (String(args.channel ?? 'WhatsApp') as 'WhatsApp' | 'SMS'));
     return { ok: true, text: `${customer.name} ko message bhej diya (logged).` };
   },
@@ -2666,7 +2724,7 @@ const bulkRemind: AlaraTool = {
     let targets = ctx.customers.slice();
     if (filter === 'inactive') targets = targets.filter((c) => c.lastVisitDays >= idle);
     targets = targets.slice(0, MAX_BATCH); // batch cap, same source of truth as preview
-    for (const c of targets) ctx.sendWhatsAppReminder(c.id, buildReminder(c), 'WhatsApp');
+    for (const c of targets) ctx.sendWhatsAppReminder(c.id, buildReminder(c, ctx), 'WhatsApp');
     return { ok: true, text: `${targets.length} outreach messages log kar diye.` };
   },
 };

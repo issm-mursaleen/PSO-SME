@@ -38,13 +38,13 @@ cd backend
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt   # (Windows)
 cp .env.example .env        # add OPENAI_API_KEY for the LLM path (optional)
-.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
+.venv/Scripts/python -m uvicorn app.main:app --reload --port 8001
 ```
-Health check: `GET http://localhost:8000/api/health`.
+Health check: `GET http://localhost:8001/api/health`.
 
 ## Frontend wiring
 The Next app (in `../frontend`) reads `NEXT_PUBLIC_API_URL` (see
-`../frontend/.env.local`, default `http://localhost:8000`).
+`../frontend/.env.local`, default `http://localhost:8001`).
 `frontend/src/lib/api.ts` POSTs chat messages here; the chat falls back to a
 local mock if the backend is unreachable. Balance-affecting chat actions are
 mirrored into the frontend `AppContext` so the UI stays in sync.
